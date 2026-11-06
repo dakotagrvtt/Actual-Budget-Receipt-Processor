@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# Control script for the receipt pipeline. Run ./receipts help for the commands.
+# Everything runs in Docker; once started, the pipeline keeps running on its own and comes back after a reboot.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+
+SERVICES=(llm decider-gguf worker)
+# One-off runs (replay, check, describe, item-test, keyword) use their own budget copy, so they never share the worker's.
+ONE_OFF=(docker compose run --rm --no-deps -e ACTUAL_DATA_DIR=/data/actual-cache-tools worker)
+
+# Run one worker script (src/$1 with the remaining arguments) in a throwaway container, and exit with its status.
+one_off() {
+  need_env
+  "${ONE_OFF[@]}" node "src/$1" "${@:2}" 2>&1 | quiet
+  exit "${PIPESTATUS[0]}"
+}
+
+# Hide the Actual API's internal chatter (sync and breadcrumb messages) from what's shown.
+quiet() { grep --line-buffered -v -E 'Breadcrumb|^ *(message|category):|^\}|^Syncing since|^Got messages|^Loaded spreadsheet|^Loading fresh spreadsheet|Container .*(Creating|Created)' || true; }
+
+# Live only when DRY_RUN is a false word (false/0/no/off, any case), like the worker's bool() in config.js.
+# Unset, empty or unrecognized means dry run: the worker falls back to its default, which is dry run.
+mode() {
+  local value
+  value="$(grep -E '^DRY_RUN=' .env 2>/dev/null | tail -n 1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//' | tr -d "'\" \t\r" | tr '[:upper:]' '[:lower:]')" || true
+  case "$value" in
+    false|0|no|off) echo live ;;
+    *) echo "dry run" ;;
+  esac
+}
+
+need_env() {
+  if [[ ! -f .env ]]; then
+    echo "No .env yet. Create it with:  cp .env.example .env && chmod 600 .env  and fill it in." >&2
+    exit 1
+  fi
+  [[ "$(stat -c %a .env)" == 600 ]] || { chmod 600 .env; echo "(set .env to private, chmod 600)"; }
+  mkdir -p data models
+  # Settings added after .env was created: append them with their defaults.
+  grep -q '^TRIGGER_TOKEN=' .env || printf '\n# web page / webhook to check the inbox on demand (./receipts trigger-url)\nTRIGGER_TOKEN=\nTRIGGER_BIND=127.0.0.1\nTRIGGER_TIMEZONE=UTC\n' >> .env
+  if grep -qE '^TRIGGER_TOKEN=$' .env; then
+    sed -i "s/^TRIGGER_TOKEN=$/TRIGGER_TOKEN=$(openssl rand -hex 20)/" .env
+    echo "(generated TRIGGER_TOKEN for the trigger page)"
+  fi
+}
+
+trigger_url() {
+  local token bind host
+  token="$(grep -E '^TRIGGER_TOKEN=' .env | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//' | tr -d "'\"")"
+  bind="$(grep -E '^TRIGGER_BIND=' .env | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//' | tr -d "'\"")"
+  host=127.0.0.1
+  [[ "$bind" == 0.0.0.0 ]] && host="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
+  [[ -n "$bind" && "$bind" != 0.0.0.0 ]] && host="$bind"
+  echo "http://${host:-127.0.0.1}:8095/?key=${token}"
+}
+
+health() { docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || echo "not created"; }
+
+usage() {
+  cat <<'EOF'
+Usage: ./receipts <command>
+
+  start           build if needed and start the models and the worker (stays up across reboots)
+  stop            stop everything (frees the GPU; stays stopped until you start it again)
+  restart         restart the worker (after editing .env or category-notes.json)
+  status          mode, container health, and the last log lines
+  logs            follow the worker log (Ctrl-C to stop watching; the worker keeps running)
+  run-now         check the Nextcloud inbox now instead of waiting for the next poll
+  check           test the connections to Nextcloud, Actual and both models (changes nothing)
+  mode dry|live   switch between dry run (changes nothing) and live (writes to Actual, moves files)
+  update          rebuild the worker after code or ACTUAL_API_VERSION changes, and restart it
+  replay ARGS     dry-run comparison against your own categorizing, e.g.
+                    ./receipts replay --nextcloud "/Receipts/Test"
+                    ./receipts replay --nextcloud "/Receipts/Inbox" --only 212537,212930
+  trigger-url     the link to the status page with a "check now" button (and the webhook URL)
+  describe        write descriptions for categories that have none (add --refresh to rewrite the auto ones)
+  keyword CMD     household keywords: add <phrase> <category> [--at <store>] [--always|--usually] | remove <phrase> [--at <store>] | list | test <item text> [--at <store>]
+  item-test N B   leave-one-out test of backend B (decider, or rules = no model) on your own split notes; saves data/research/item-test-N.json
+EOF
+}
+
+cmd="${1:-help}"
+shift || true
+case "$cmd" in
+  start)
+    need_env
+    if ! systemctl is-enabled --quiet docker 2>/dev/null; then
+      echo "Note: Docker isn't enabled at boot, so the pipeline won't come back after a reboot."
+      echo "      Fix with: sudo systemctl enable docker"
+    fi
+    docker compose up -d --build "${SERVICES[@]}"
+    echo "Started in $(mode) mode. The worker starts once both models have loaded (about a minute)."
+    echo "Watch it with: ./receipts logs"
+    ;;
+  stop)
+    docker compose stop "${SERVICES[@]}"
+    ;;
+  restart)
+    need_env
+    # up -d (not restart) so .env changes are picked up.
+    docker compose up -d --force-recreate worker
+    ;;
+  status)
+    echo "mode: $(mode)"
+    for c in receipt-llm receipt-decider-gguf receipt-worker; do printf '  %-22s %s\n' "$c" "$(health "$c")"; done
+    if [[ -f data/heartbeat ]]; then echo "last poll: $(cat data/heartbeat)"; fi
+    echo "--- recent worker log ---"
+    docker logs --tail 60 receipt-worker 2>&1 | quiet | tail -15
+    ;;
+  logs)
+    docker logs -f --tail 200 receipt-worker 2>&1 | quiet
+    ;;
+  run-now)
+    docker kill -s USR1 receipt-worker >/dev/null && echo "Asked the worker to check the inbox now. Watch with: ./receipts logs"
+    ;;
+  check)
+    one_off check.js
+    ;;
+  mode)
+    need_env
+    case "${1:-}" in
+      dry)
+        sed -i 's/^DRY_RUN=.*/DRY_RUN=true/' .env
+        docker compose up -d --force-recreate worker
+        echo "Dry run: the worker logs what it would do and changes nothing."
+        ;;
+      live)
+        echo "Live mode: the worker will split and recategorize transactions in Actual and move receipts in Nextcloud."
+        echo "Receipts already seen in dry run are processed again for real."
+        read -r -p "Type 'live' to confirm: " answer
+        [[ "$answer" == live ]] || { echo "Cancelled."; exit 1; }
+        sed -i 's/^DRY_RUN=.*/DRY_RUN=false/' .env
+        docker compose up -d --force-recreate worker
+        echo "Live. Watch the first receipts with: ./receipts logs"
+        ;;
+      *) echo "mode: $(mode)   (change with ./receipts mode dry|live)" ;;
+    esac
+    ;;
+  update)
+    need_env
+    docker compose build worker
+    docker compose up -d worker
+    ;;
+  replay)
+    one_off replay.js "$@"
+    ;;
+  describe)
+    one_off describe-categories.js "$@"
+    ;;
+  item-test)
+    one_off item-test.js "$@"
+    ;;
+  keyword)
+    one_off keyword-cli.js "$@"
+    ;;
+  trigger-url)
+    need_env
+    url="$(trigger_url)"
+    echo "Status page (bookmark it, or link it from an Actual note):"
+    echo "  $url"
+    echo "Webhook (POST):"
+    echo "  ${url/\/?key=//run?key=}"
+    echo "Keep these private: anyone with the key can trigger a check and see recent results."
+    ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac

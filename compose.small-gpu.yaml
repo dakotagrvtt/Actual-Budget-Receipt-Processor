@@ -1,0 +1,28 @@
+# Smaller GPUs, or a GPU shared with other apps (e.g. Immich machine learning): same models, less memory.
+#   docker compose -f compose.yaml -f compose.small-gpu.yaml up -d
+# Add -f compose.nvidia.yaml as well on NVIDIA. Measured on Vulkan (RX 7900 XT), at load:
+#   default:   reader 5.6 GB (32k context, 4 slots) + decider 2.7 GB  = about 8.3 GB
+#   this file: reader 5.1 GB (16k context, 1 slot)  + decider 2.3 GB  = about 7.4 GB
+#   DECIDER_GPU_LAYERS=0 in .env: decider on the CPU instead           = about 5.1 GB on the GPU
+#   (figures are for d1-2B; d3-flash 9B is about 6.8 GB instead of 2.7)
+# DECIDER_CTX / DECIDER_BATCH in .env override this file's smaller decider context and batch (8192 / 4096).
+# One slot means one request at a time, which is all the worker sends. 16k context still leaves room for a
+# 3-page PDF (a receipt photo is about 4k tokens). The decider's longest prompt so far was about 2.4k tokens.
+# Image encoding needs some working memory on top of the load figure, so leave ~0.5 GB of headroom.
+services:
+  llm:
+    command: >
+      -m /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q8_0.gguf
+      --mmproj /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-BF16.gguf
+      --host 0.0.0.0 --port 8080
+      -ngl 99 -c 16384 -np 1
+      --temp 0.1 --top-k 20 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0
+      --reasoning-budget ${READER_REASONING_BUDGET:-0}
+      --reasoning-budget-message "Time is up. Stop thinking and write the JSON answer now."
+
+  decider-gguf:
+    command: >
+      -hf ${DECIDER_MODEL:-LiquidAI/d1-2B-GGUF:Q8_0}
+      --host 0.0.0.0 --port 8080
+      -ngl ${DECIDER_GPU_LAYERS:-99} -c ${DECIDER_CTX:-8192} -np 1 -b ${DECIDER_BATCH:-4096} -ub ${DECIDER_BATCH:-4096}
+      --offline

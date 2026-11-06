@@ -1,0 +1,12 @@
+{
+  "name": "receipt-worker",
+  "private": true,
+  "type": "module",
+  "description": "Reads receipts from Nextcloud with a local vision model and categorizes matching Actual Budget transactions.",
+  "scripts": {
+    "test": "node --env-file=test.env --test src/*.test.js"
+  },
+  "dependencies": {
+    "webdav": "^5.7.0"
+  }
+}
