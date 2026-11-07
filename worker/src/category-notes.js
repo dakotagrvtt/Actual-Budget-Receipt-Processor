@@ -2,11 +2,14 @@
 // The decider chooses among these, so they carry the household knowledge it can't guess.
 //
 // File format, keyed by "Group / Category":
-//   "Daily Expenses / Adult 2": "Adult 2's clothes, movies, ..."                       ← written by you
+//   "Daily Expenses / Sam": "Sam's clothes, movies, ..."                       ← written by you
 //   "Daily Expenses / Child": { "description": "...", "auto": true, ... }         ← written by the reader model, for you to review
 // A plain string, or an entry without "auto": true, is yours and is never overwritten.
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import { config, log } from './config.js';
+import { withLock, writeJsonAtomic } from './file-lock.js';
+import { today } from './dates.js';
 
 export function loadCategoryNotes() {
   try {
@@ -26,3 +29,67 @@ export function categoryDescriptions() {
       .filter(([, text]) => typeof text === 'string' && text.trim()),
   );
 }
+
+/**
+ * Change the notes file safely while the worker may be writing it too: lock, read it fresh, let fn edit the notes,
+ * write atomically. fn returns false to skip the write. A file that can't be parsed is never overwritten.
+ */
+export function updateNotes(fn) {
+  return withLock(`${config.categoryNotesPath}.lock`, async () => {
+    let notes = {};
+    try {
+      notes = JSON.parse(await fsp.readFile(config.categoryNotesPath, 'utf8'));
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw new Error(`could not read ${config.categoryNotesPath}: ${err.message}`);
+    }
+    if (fn(notes) === false) return false;
+    await writeJsonAtomic(config.categoryNotesPath, notes);
+    return true;
+  });
+}
+
+/**
+ * Save a description you wrote. The entry stops being a draft (no "auto": true), so the worker never rewrites it.
+ * Other fields are kept (previous, basedOn, ...); a plain string stays a plain string.
+ * Returns false for a category that isn't in the file.
+ */
+export function saveUserNote(label, description, by = 'you (status page)') {
+  const text = String(description).trim();
+  if (!text) throw new Error('The description can\'t be empty.');
+  return updateNotes((notes) => {
+    if (!Object.hasOwn(notes, label)) return false;
+    const cur = notes[label];
+    if (typeof cur === 'string') {
+      if (cur === text) return false;
+      notes[label] = text;
+    } else {
+      notes[label] = { ...(cur ?? {}), description: text, auto: false, writtenBy: by, written: today() };
+    }
+    return true;
+  });
+}
+
+/**
+ * Undo a save: put back the earlier description and its draft flag (and who wrote it, when). A plain-string entry stays
+ * a plain string. Returns false for a category that isn't in the file.
+ */
+export function restoreNote(label, { description, auto, writtenBy, written }) {
+  return updateNotes((notes) => {
+    if (!Object.hasOwn(notes, label)) return false;
+    const cur = notes[label];
+    if (typeof cur === 'string' && !auto) {
+      notes[label] = description;
+      return true;
+    }
+    const next = { ...(typeof cur === 'string' ? {} : cur), description, auto: Boolean(auto) };
+    for (const [k, v] of Object.entries({ writtenBy, written })) {
+      if (v) next[k] = v;
+      else delete next[k];
+    }
+    notes[label] = next;
+    return true;
+  });
+}
+
+/** Is this notes entry a draft written by the model (still open to being rewritten)? */
+export const isDraft = (v) => typeof v === 'object' && v !== null && v.auto === true;

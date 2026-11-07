@@ -35,7 +35,7 @@ export function usHolidays(y) {
     ['Halloween', utc(y, 10, 31)],
     ['Thanksgiving', nthWeekday(y, 11, 4, 4)],
     ['Christmas', utc(y, 12, 25)],
-  ].map(([name, date]) => ({ name, date: isoDay(date), source: 'US holiday' }));
+  ].map(([name, date]) => ({ name, date: isoDay(date), source: 'US holiday', builtin: true }));
 }
 
 // --- Nextcloud CalDAV (read-only) ---
@@ -97,10 +97,12 @@ async function calendarEvents(start, end) {
 }
 
 /**
- * Occasions from OCCASION_DAYS_AFTER days before the purchase to OCCASION_DAYS_BEFORE days after it, nearest first,
- * as short strings for the categorizer: "Father's Day (US holiday) on 2026-06-21, 3 days after the purchase".
+ * Occasions from OCCASION_DAYS_AFTER days before the purchase to OCCASION_DAYS_BEFORE days after it, nearest first:
+ * [{ name, source, builtin, when, text }]. `text` is the short string for the categorizer: "Father's Day (US holiday)
+ * on 2026-06-21, 3 days after the purchase". `builtin` is true only for the holiday list above (never for a calendar
+ * event, whatever the calendar is called); the remote decider keeps only a built-in name (anonymize.js).
  */
-export async function occasionsNear(dateIso) {
+export async function occasionDetails(dateIso) {
   const o = config.occasions;
   if (!o.enabled || !dateIso) return [];
   const day = Date.parse(`${dateIso}T00:00:00Z`);
@@ -122,5 +124,13 @@ export async function occasionsNear(dateIso) {
     .sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))
     .filter((e) => !seen.has(e.name) && seen.add(e.name)) // a multi-day event (Winter Break) counts once, nearest day
     .slice(0, 5)
-    .map((e) => `${e.name} (${e.source}) on ${e.date}, ${e.offset === 0 ? 'the day of the purchase' : `${Math.abs(e.offset)} day(s) ${e.offset > 0 ? 'after' : 'before'} the purchase`}`);
+    .map((e) => {
+      const when = e.offset === 0 ? 'the day of the purchase' : `${Math.abs(e.offset)} day(s) ${e.offset > 0 ? 'after' : 'before'} the purchase`;
+      return { name: e.name, source: e.source, builtin: e.builtin === true, when, text: `${e.name} (${e.source}) on ${e.date}, ${when}` };
+    });
+}
+
+/** The same occasions as short strings (see occasionDetails). */
+export async function occasionsNear(dateIso) {
+  return (await occasionDetails(dateIso)).map((o) => o.text);
 }

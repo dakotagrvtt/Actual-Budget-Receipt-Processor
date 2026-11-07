@@ -1,9 +1,8 @@
 // Work out a receipt's purchase date without trusting the model's own conversion.
 // The model copies the date as printed; we parse it here (US month/day order, as on US receipts) and keep
 // it only if it's plausible relative to when the photo was uploaded. Otherwise the receipt is treated as undated.
-// Also the worker's one set of day helpers (isoDay, today, shiftDay, dayDiff).
-
-// Date helpers shared by the whole worker. Days are YYYY-MM-DD strings, read as UTC midnight (no DST surprises).
+// Also the worker's one set of day helpers (isoDay, today, shiftDay, dayDiff), used everywhere: days are YYYY-MM-DD
+// strings, read as UTC midnight (no DST surprises).
 export const DAY = 86400000;
 /** A Date as YYYY-MM-DD (UTC). */
 export const isoDay = (d) => d.toISOString().slice(0, 10);

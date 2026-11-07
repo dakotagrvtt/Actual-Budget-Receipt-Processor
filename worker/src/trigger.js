@@ -1,29 +1,59 @@
-// A small web page and webhook for checking the inbox on demand, instead of waiting for the next poll.
-//   GET  /?key=TOKEN        status page with a "Check for receipts now" button (link it from an Actual note)
-//   POST /run?key=TOKEN     webhook: check the inbox now (Nextcloud webhook, phone shortcut, curl)
+// The control panel and webhook for the worker (port 8095). Every request needs TRIGGER_TOKEN; without it set, the server doesn't start.
+//   GET  /?key=TOKEN               status page: mode, "Check for receipts now", recent receipts (link it from an Actual note)
+//   GET  /categories, /keywords    edit category descriptions and household keywords
+//   GET  /learned                  what the worker learned from your corrections in Actual;  POST /lesson-forget, /undo-lesson
+//   GET  /privacy                  names kept out of what the remote decider gets (only with DECIDER_PROVIDER=remote)
+//   POST /privacy-word-add, -remove, -notname-add, -notname-remove, -place-add, -place-remove, -notplace-add, -notplace-remove
+//   GET  /go-live                  the confirmation step before leaving dry run
+//   POST /run?key=TOKEN            webhook: check the inbox now (Nextcloud webhook, phone shortcut, curl)
+//   POST /mode, /category-save, /keyword-add, /keyword-remove, /retry    the page's buttons (forms), then a 303 back with a notice
+//   POST /undo-keyword, -category, -word, -notname, -notname-mark, -place, -notplace, -notplace-mark    the Undo button in a notice
+//   GET  /receipt?id=STATEKEY      one receipt: photo, what was read, the decision;  GET /receipt-photo?id=…[&page=n][&raw=1] the picture
 // The key can also be sent as an "Authorization: Bearer TOKEN" or "X-Trigger-Key: TOKEN" header.
-// Every request needs TRIGGER_TOKEN; without it set, the server doesn't start.
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { config, log } from './config.js';
 import { loadState, parseStateKey } from './state.js';
+import { loadKeywords } from './keywords.js';
+import { learnedData, MemoryError } from './memory.js';
+import { resolveDryRun, envDisagreement } from './settings.js';
+import { upgradeStatus } from './actual-upgrade.js';
+import { readSetupProblem } from './alert.js';
+import { PrivateWordsError } from './private-words.js';
+import * as actions from './panel-actions.js';
+import * as pages from './panel-pages.js';
+import * as receipts from './panel-receipt.js';
 
-const escape = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const PORT = 8095;
+const MAX_BODY = 64 * 1024; // the largest form the page legitimately sends is a few KB
 
 function keyOf(req, url) {
   const auth = req.headers.authorization ?? '';
   return url.searchParams.get('key') ?? req.headers['x-trigger-key'] ?? (auth.startsWith('Bearer ') ? auth.slice(7) : '');
 }
-function allowed(key) {
+export function allowed(key) {
   const a = Buffer.from(String(key));
   const b = Buffer.from(config.trigger.token);
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-async function statusPage(key, notice) {
+/** Read a urlencoded form body, refusing anything over MAX_BODY. Returns URLSearchParams, or null if it was too big. */
+async function readForm(req, limit = MAX_BODY) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size <= limit) chunks.push(chunk); // past the limit: keep reading (so the answer can be sent) but keep nothing
+  }
+  return size > limit ? null : new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+}
+
+/** What the status page shows: the mode in force, the mode waiting to start, the heartbeat and the recent receipts. */
+async function statusData() {
   let heartbeat = 'not yet';
   let recent = [];
+  let stateError = null;
   try {
     heartbeat = new Date(await fs.readFile(config.heartbeatPath, 'utf8')).toLocaleString('en-US', { timeZone: config.trigger.timeZone });
   } catch { /* first start */ }
@@ -31,29 +61,160 @@ async function statusPage(key, notice) {
     const state = await loadState();
     recent = Object.entries(state)
       .filter(([k]) => parseStateKey(k).dry === config.dryRun)
-      .map(([k, v]) => ({ file: parseStateKey(k).file.split('/').pop(), ...v }))
+      .map(([k, v]) => ({ key: k, file: parseStateKey(k).file.split('/').pop(), ...v }))
       .sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? '')))
       .slice(0, 15);
-  } catch { /* nothing processed yet */ }
-  const rows = recent
-    .map((r) => `<tr><td>${escape(r.file)}</td><td>${escape(r.done ? r.result : r.waiting ? `waiting for the bank charge (next check ${r.waiting.nextCheck ? new Date(r.waiting.nextCheck).toLocaleString('en-US', { timeZone: config.trigger.timeZone }) : 'soon'})` : r.applied ? 'applied, moving the file' : `retrying (${r.error ?? 'error'})`)}</td><td>${escape(r.at ? new Date(r.at).toLocaleString('en-US', { timeZone: config.trigger.timeZone }) : '')}</td></tr>`)
-    .join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Receipts</title><style>
-:root{color-scheme:light dark;--bg:#fafafa;--fg:#1d1d1f;--muted:#6e6e73;--line:#d2d2d7;--accent:#2f6fde}
-@media (prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#f2f2f7;--muted:#98989d;--line:#3a3a3c;--accent:#5e9bff}}
-body{font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:44rem;margin:2rem auto;padding:0 16px}
-h1{font-size:1.3rem;margin:0 0 .25rem}.muted{color:var(--muted)}
-button{font:inherit;padding:.6rem 1.1rem;border:0;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer;margin:1rem 0}
-.notice{padding:.5rem .75rem;border:1px solid var(--line);border-radius:8px}
-table{width:100%;border-collapse:collapse;font-size:.9rem}td,th{text-align:left;padding:.35rem .5rem;border-bottom:1px solid var(--line)}
-</style></head><body>
-<h1>Receipts</h1>
-<div class="muted">${config.dryRun ? 'Dry run: decisions are logged, nothing changes' : 'Live: writes to Actual and moves files in Nextcloud'} · last check ${escape(heartbeat)} · checks every ${Math.round(config.pollSeconds / 60)} min</div>
-${notice ? `<p class="notice">${escape(notice)}</p>` : ''}
-<form method="post" action="run?key=${encodeURIComponent(key)}"><button>Check for receipts now</button></form>
-<table><tr><th>Receipt</th><th>Result</th><th>When</th></tr>${rows || '<tr><td colspan="3" class="muted">Nothing processed yet</td></tr>'}</table>
-</body></html>`;
+  } catch (err) {
+    stateError = err.message; // shown on the page; never mistaken for "nothing processed yet"
+  }
+  const resolved = resolveDryRun();
+  const { dryRun: next, source, settings } = resolved;
+  return { dryRun: config.dryRun, pending: next !== config.dryRun ? next : null, settings: source === 'settings' ? settings : null, envNote: envDisagreement(resolved), apiNote: upgradeStatus.note, stateError, heartbeat, recent, alert: await readSetupProblem() };
+}
+
+const ROUTES = {
+  '/mode': actions.changeMode,
+  '/category-save': actions.saveCategory,
+  '/keyword-add': actions.addKeywordFromForm,
+  '/keyword-remove': actions.removeKeywordFromForm,
+  '/retry': (form) => actions.tryAgain(form),
+  '/lesson-forget': actions.forgetLessonFromForm,
+  '/undo-lesson': actions.undoLesson,
+  '/undo-keyword': actions.undoKeyword,
+  '/undo-category': actions.undoCategory,
+  '/undo-word': actions.undoWord,
+  '/undo-notname': actions.undoNotName,
+  '/undo-notname-mark': actions.undoNotNameMark,
+  '/undo-place': actions.undoPlace,
+  '/undo-notplace': actions.undoNotPlace,
+  '/undo-notplace-mark': actions.undoNotPlaceMark,
+  '/privacy-word-add': actions.addPrivateWord,
+  '/privacy-word-remove': actions.removePrivateWord,
+  '/privacy-notname-add': actions.markNotName,
+  '/privacy-notname-remove': actions.unmarkNotName,
+  '/privacy-place-add': actions.addPrivatePlace,
+  '/privacy-place-remove': actions.removePrivatePlace,
+  '/privacy-notplace-add': actions.markNotPlace,
+  '/privacy-notplace-remove': actions.unmarkNotPlace,
+};
+// Where each form sends you back to.
+const UNDO_BACK = { 'undo-keyword': './keywords', 'undo-category': './categories', 'undo-lesson': './learned' };
+const BACK = { '/mode': './', '/category-save': './categories', '/keyword-add': './keywords', '/keyword-remove': './keywords', '/lesson-forget': './learned', '/retry': './' };
+for (const route of Object.keys(ROUTES)) if (route.startsWith('/privacy-')) BACK[route] = './privacy';
+for (const r of actions.UNDO_ROUTES) BACK[`/${r}`] ??= UNDO_BACK[r] ?? './privacy';
+
+const html = (res, body, code = 200) => res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': pages.CSP }).end(body);
+const text = (res, code, msg) => res.writeHead(code, { 'Content-Type': 'text/plain', 'X-Content-Type-Options': 'nosniff' }).end(`${msg}\n`);
+/** Cut to n characters by code point, so an emoji is never split in half (encodeURIComponent throws on a lone surrogate). */
+export const clip = (s, n = 300) => Array.from(String(s)).slice(0, n).join('');
+const MAX_UNDO_LINK = 9000; // keep the redirect link far below Node's 16 KB header limit
+const undoQuery = (undo) => (undo ? `&undo=${encodeURIComponent(undo.route)}&u=${encodeURIComponent(JSON.stringify(undo.fields))}` : '');
+const redirect = (res, where, key, notice, undo) => {
+  let q = undoQuery(undo);
+  if (q.length > MAX_UNDO_LINK) {
+    q = '';
+    notice = `${clip(notice, 240)} (Too long to offer Undo.)`;
+  }
+  res.writeHead(303, { Location: `${where}?key=${encodeURIComponent(key)}${notice ? `&notice=${encodeURIComponent(clip(notice))}${q}` : ''}` }).end();
+};
+
+/** POST /run: the webhook (and the page's "Check for receipts now" form). */
+function handleRun(req, res, key, onTrigger) {
+  req.resume(); // ignore any webhook payload
+  onTrigger(req.headers['user-agent']?.includes('Nextcloud') ? 'Nextcloud webhook' : 'trigger');
+  // A browser form gets the page back; a webhook gets a short JSON answer.
+  if ((req.headers.accept ?? '').includes('text/html')) {
+    res.writeHead(303, { Location: `./?key=${encodeURIComponent(key)}&started=1` }).end();
+  } else {
+    res.writeHead(202, { 'Content-Type': 'application/json' }).end('{"ok":true}\n');
+  }
+}
+
+/** POST to one of the ROUTES: run the handler, then redirect back to its page with a notice. */
+async function handleForm(req, res, url, key) {
+  const form = await readForm(req);
+  if (!form) {
+    res.writeHead(413, { 'Content-Type': 'text/plain', 'X-Content-Type-Options': 'nosniff', Connection: 'close' }).end('too large\n');
+    return;
+  }
+  let message;
+  const out = {};
+  try {
+    message = await ROUTES[url.pathname](form, out);
+  } catch (err) {
+    if (!(err instanceof actions.PanelError || err instanceof PrivateWordsError || err instanceof MemoryError)) throw err; // these carry a message for the page
+    message = err.message;
+  }
+  redirect(res, BACK[url.pathname], key, message, out.undo);
+}
+
+/** GET pages. Returns false when the path is not a page, so the caller answers 404. */
+async function handlePage(res, url, key, notice, undo, deps) {
+  const { pathname } = url;
+  if (pathname === '/') {
+    html(res, pages.statusPage(await statusData(), key, notice, undo));
+    return true;
+  }
+  if (pathname === '/go-live') {
+    html(res, pages.goLivePage(key, notice, undo));
+    return true;
+  }
+  if (pathname === '/categories') {
+    html(res, pages.categoriesPage(actions.listCategories(), key, notice, undo));
+    return true;
+  }
+  if (pathname === '/receipt') {
+    const view = await receipts.receiptView(url.searchParams.get('id'), deps);
+    if (view.code) html(res, pages.layout({ active: 'status', key, body: `<p>${pages.escape(view.message)}</p><p><a href="./?key=${pages.escape(encodeURIComponent(key))}">Back to the list</a></p>` }), view.code);
+    else html(res, pages.receiptPage(view, key, notice));
+    return true;
+  }
+  if (pathname === '/receipt-photo') {
+    const page = Number(url.searchParams.get('page') ?? 1);
+    const out = await receipts.receiptPhoto(url.searchParams.get('id'), { page, raw: url.searchParams.get('raw') === '1' }, deps);
+    res.writeHead(out.code, out.headers).end(out.body);
+    return true;
+  }
+  if (pathname === '/privacy' && config.decider.provider === 'remote') {
+    try {
+      html(res, pages.privacyPage(await actions.privacyData(), key, notice, undo));
+    } catch (err) {
+      if (!(err instanceof PrivateWordsError)) throw err;
+      text(res, 500, err.message); // the list is damaged: say so, not just "error"
+    }
+    return true;
+  }
+  if (pathname === '/learned') {
+    html(res, pages.learnedPage(await learnedData(), key, notice, undo));
+    return true;
+  }
+  if (pathname === '/keywords') {
+    const data = { keywords: await loadKeywords().catch(() => []), categories: actions.listCategories().map((c) => c.label), mode: config.keywordMode };
+    html(res, pages.keywordsPage(data, key, notice, undo));
+    return true;
+  }
+  return false;
+}
+
+/** The request handler, separate from listen() so tests can run it on an ephemeral port. */
+export function makeServer(onTrigger, deps = {}) {
+  return http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const key = keyOf(req, url);
+      if (!allowed(key)) return text(res, 403, 'forbidden: this page needs its key in the link (?key=...). Run ./receipts trigger-url in the pipeline folder to print the full link.');
+      const undo = actions.undoFromQuery(url.searchParams);
+      const notice = url.searchParams.get('notice') || (url.searchParams.get('started') ? 'Checking the inbox now. Refresh in a minute to see the results.' : '');
+
+      if (req.method === 'POST' && url.pathname === '/run') return handleRun(req, res, key, onTrigger);
+      if (req.method === 'POST' && ROUTES[url.pathname]) return await handleForm(req, res, url, key);
+      if (req.method === 'GET' && (await handlePage(res, url, key, notice, undo, deps))) return;
+      text(res, 404, 'not found');
+    } catch (err) {
+      text(res, 500, 'error');
+      log(`trigger page error: ${err.message}`);
+    }
+  });
 }
 
 export function startTriggerServer(onTrigger) {
@@ -61,35 +222,5 @@ export function startTriggerServer(onTrigger) {
     log('trigger page off: set TRIGGER_TOKEN to enable it');
     return;
   }
-  const server = http.createServer(async (req, res) => {
-    try {
-      const url = new URL(req.url, 'http://localhost');
-      const key = keyOf(req, url);
-      if (!allowed(key)) {
-        res.writeHead(403, { 'Content-Type': 'text/plain' }).end('forbidden\n');
-        return;
-      }
-      if (req.method === 'POST' && url.pathname === '/run') {
-        req.resume(); // ignore any webhook payload
-        onTrigger(req.headers['user-agent']?.includes('Nextcloud') ? 'Nextcloud webhook' : 'trigger');
-        // A browser form gets the page back; a webhook gets a short JSON answer.
-        if ((req.headers.accept ?? '').includes('text/html')) {
-          res.writeHead(303, { Location: `./?key=${encodeURIComponent(key)}&started=1` }).end();
-        } else {
-          res.writeHead(202, { 'Content-Type': 'application/json' }).end('{"ok":true}\n');
-        }
-        return;
-      }
-      if (req.method === 'GET' && url.pathname === '/') {
-        const notice = url.searchParams.get('started') ? 'Checking the inbox now. Refresh in a minute to see the results.' : '';
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' }).end(await statusPage(key, notice));
-        return;
-      }
-      res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found\n');
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'text/plain' }).end('error\n');
-      log(`trigger page error: ${err.message}`);
-    }
-  });
-  server.listen(8095, '0.0.0.0', () => log('trigger page listening on port 8095'));
+  makeServer(onTrigger).listen(PORT, '0.0.0.0', () => log(`trigger page listening on port ${PORT}`));
 }

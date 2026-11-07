@@ -1,5 +1,5 @@
-// Saved readings (replay --save-readings / --readings): <name>.read.json, or <name>.lfm3-read.json from before the
-// suffix was renamed. Other *-read.json files (v1-read, stripped-read) are not picked up.
+// Saved readings for replay (--save-readings / --readings): <name>.read.json, plus the older <name>.lfm3-read.json
+// files that may still be in a folder. Other *-read.json files are not picked up.
 const SUFFIXES = ['.read.json', '.lfm3-read.json'];
 
 /** From a folder listing: [{ file, name }] sorted by name, one per base name (.read.json wins over .lfm3-read.json). */

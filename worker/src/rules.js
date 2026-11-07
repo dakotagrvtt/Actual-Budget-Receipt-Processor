@@ -217,3 +217,58 @@ export function ruleStoresByCategory(payeeName = ctx.payeeName) {
   }
   return out;
 }
+
+// The amount values (in cents, as the transaction holds them) where a condition's outcome can flip.
+function amountEdges(c) {
+  if (c.field !== 'amount') return [];
+  const num = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : x);
+  // An outflow-only condition compares the spending size, so its edge sits on the negative side.
+  const sign = c.options?.outflow ? -1 : 1;
+  let edges = [];
+  if (c.op === 'isbetween') edges = [c.value?.num1, c.value?.num2];
+  else if (c.op === 'isapprox') {
+    const n = num(c.value);
+    const t = Math.round(Math.abs(n) * 0.075);
+    edges = [n - t, n + t];
+  } else if (['is', 'gt', 'gte', 'lt', 'lte'].includes(c.op)) edges = [num(c.value)];
+  return edges.filter(Number.isFinite).map((e) => sign * e);
+}
+
+const MAX_AMOUNT_RANGES = 4;
+
+/**
+ * Where the charge amount changes the category your rules give this store. Finds rules whose other conditions match
+ * the transaction but that also test the amount, tries amounts at and next to every edge (and the transaction's own),
+ * and returns the spending ranges in dollars: [{ upTo, category }, { over, upTo, category }, { over, category }], with
+ * category ids (null = no rule category). Empty when the amount doesn't matter, or when it splits into more than 4 ranges.
+ */
+export function amountRulesFor(txn) {
+  if (!ranked) throw new Error('rules not loaded');
+  const t = forRules(txn);
+  const edges = new Set();
+  for (const rule of ranked) {
+    const amountConds = rule.conditions.filter((c) => c.field === 'amount');
+    if (!amountConds.length) continue;
+    const others = rule.conditions.filter((c) => c.field !== 'amount');
+    if (rule.conditionsOp !== 'or' && !others.every((c) => conditionMatches(c, t, ctx))) continue;
+    for (const c of amountConds) for (const e of amountEdges(c)) edges.add(e);
+  }
+  if (!edges.size) return [];
+  // Spending sizes in cents to probe, smallest first: the edges, one either side, the charge itself, and the extremes.
+  const sizes = new Set([1, 100_000_000, Math.abs(txn.amount ?? 0)]);
+  for (const e of edges) for (const d of [-1, 0, 1]) sizes.add(-e + d);
+  const probes = [...sizes].filter((n) => Number.isInteger(n) && n >= 1).sort((a, b) => a - b);
+  const runs = [];
+  for (const size of probes) {
+    const category = ruleCategoryFor({ ...txn, amount: -size });
+    const last = runs[runs.length - 1];
+    if (last && last.category === category) last.end = size;
+    else runs.push({ category, end: size });
+  }
+  if (runs.length < 2 || runs.length > MAX_AMOUNT_RANGES) return [];
+  return runs.map((r, i) => ({
+    ...(i > 0 ? { over: runs[i - 1].end / 100 } : {}),
+    ...(i < runs.length - 1 ? { upTo: r.end / 100 } : {}),
+    category: r.category,
+  }));
+}

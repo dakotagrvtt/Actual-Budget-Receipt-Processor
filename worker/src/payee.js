@@ -1,3 +1,5 @@
+// Fuzzy comparison of a receipt's merchant (and store clues) with a bank payee name, plus the optional alias file.
+// match.js and actual.js use it to pick the right charge and to find past purchases at the same store.
 import fs from 'node:fs';
 import { config, log } from './config.js';
 
@@ -76,10 +78,10 @@ export function similarity(a, b) {
   if (ta.length === 0 || tb.length === 0) return contained;
   const matched = ta.filter((t) => tb.some((u) => wordMatch(t, u)));
   let score = (0.8 * matched.length) / Math.min(ta.length, tb.length);
-  // Brand names come first: "costco wholesale" ~ "costco whse", "maple thrift" ~ "maple transitional".
+  // Brand names come first: "costco wholesale" ~ "costco whse", "acme thrift" ~ "acme resale".
   if (distinctive(ta[0]) && ta[0].length >= 4 && wordMatch(ta[0], tb[0])) score = Math.max(score, 0.7);
   if (ta.length >= 2 && tb.length >= 2 && wordMatch(ta[0], tb[0]) && wordMatch(ta[1], tb[1]) && (distinctive(ta[0]) || distinctive(ta[1]))) {
-    score = Math.max(score, 0.75); // "blue door oak park" ~ "blue door thrift oak parkoak"
+    score = Math.max(score, 0.75); // "blue door main street" ~ "blue door thrift main streetmain"
   }
   if (!matched.some(distinctive)) score = Math.min(score, 0.5); // only generic words in common: "pizza hut" / "pizza ranch"
   return Math.max(contained, score);

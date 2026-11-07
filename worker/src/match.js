@@ -8,6 +8,8 @@ import { DAY, isoDay, shiftDay } from './dates.js';
 
 // Payee scores closer than this are too close to call between two candidates.
 const AMBIGUOUS_SCORE_GAP = 0.15;
+// How many older charges the review message lists.
+const OLDER_LISTED = 5;
 
 export const describe = (t) => `${t.date} ${t.accountName ?? ''} ${money(-t.amount)} "${t.payeeName ?? t.imported_payee ?? '?'}"`.replace(/ {2,}/g, ' ');
 
@@ -83,7 +85,7 @@ export async function findMatch(receipt, date, anchor, opts) {
       candidates: found,
       doubts: [],
       waitable: true,
-      problem: `the receipt has no readable date and no charge in the ${config.match.noDateRecentDays} days before the upload matches; an older charge matches, check it: ${found.slice(0, 5).map((c) => `${describe(c)} (payee score ${c.payeeScore.toFixed(2)})`).join('; ')}`,
+      problem: `the receipt has no readable date and no charge in the ${config.match.noDateRecentDays} days before the upload matches; an older charge matches, check it: ${found.slice(0, OLDER_LISTED).map((c) => `${describe(c)} (payee score ${c.payeeScore.toFixed(2)})`).join('; ')}`,
     };
   }
   return { ...m, doubts: [], waitable: true };

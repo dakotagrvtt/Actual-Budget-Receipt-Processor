@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY package.json ./
 ARG ACTUAL_API_VERSION=latest
-RUN npm install --omit=dev && npm install --omit=dev "@actual-app/api@${ACTUAL_API_VERSION}"
+# "auto" bakes in the latest as the fallback; the worker installs the server's own version at start (src/actual-api.js).
+RUN v="${ACTUAL_API_VERSION}"; [ "$v" = auto ] && v=latest; npm install --omit=dev && npm install --omit=dev "@actual-app/api@${v}"
 COPY src ./src
 
 USER node
