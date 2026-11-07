@@ -1,0 +1,76 @@
+{
+  "name": "free-and-zero",
+  "about": "A BOGO free line at 0.00, a \"FREE ITEM\" coupon bigger than the item before it, and a 0.00 info line.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 5.99,
+    "tax": 0.21,
+    "tip": null,
+    "total": 6.2,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 7,
+        "amount": 0.21
+      }
+    ],
+    "items": [
+      {
+        "description": "PASTA SAUCE",
+        "amount": 3.49,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "PASTA SAUCE BOGO",
+        "amount": 0,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "GARLIC",
+        "amount": 0.5,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "FREE ITEM COUPON",
+        "amount": -0.99,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "REWARDS BALANCE 0.00",
+        "amount": 0,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "SPONGE",
+        "amount": 2.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      }
+    ]
+  }
+}

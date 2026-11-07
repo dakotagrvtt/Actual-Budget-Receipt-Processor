@@ -1,0 +1,185 @@
+{
+  "_about": "Synthetic Actual budgets (made-up households). groups/categories mirror what @actual-app/api returns. 'kinds' says which category a sensible decider files each kind of item under (see readings: every item carries a kind). 'exclude' is EXCLUDE_CATEGORY_GROUPS / EXCLUDE_CATEGORIES for that household. 'payees' are the Actual payees; 'accounts' the bank accounts.",
+  "tiny": {
+    "about": "Three spending categories, a bills group that is excluded, one income category.",
+    "groups": [
+      { "id": "g-sp", "name": "Spending" },
+      { "id": "g-bi", "name": "Bills" },
+      { "id": "g-in", "name": "Income", "is_income": true }
+    ],
+    "categories": [
+      { "id": "c-gro", "name": "Groceries", "group_id": "g-sp" },
+      { "id": "c-hou", "name": "Household", "group_id": "g-sp" },
+      { "id": "c-oth", "name": "Other", "group_id": "g-sp" },
+      { "id": "c-rent", "name": "Rent", "group_id": "g-bi" },
+      { "id": "c-pay", "name": "Paycheck", "group_id": "g-in", "is_income": true }
+    ],
+    "exclude": { "groups": ["Bills"], "categories": [] },
+    "kinds": {
+      "grocery": "Spending / Groceries", "household": "Spending / Household", "health": "Spending / Household",
+      "clothing": "Spending / Other", "kids": "Spending / Other", "restaurant": "Spending / Other", "fuel": "Spending / Other",
+      "pet": "Spending / Other", "alcohol": "Spending / Groceries", "electronics": "Spending / Other", "gift": "Spending / Other",
+      "garden": "Spending / Household", "media": "Spending / Other", "school": "Spending / Other"
+    }
+  },
+  "standard": {
+    "about": "A typical two-adult, one-kid household: about a dozen receipt categories, bills and savings excluded, one hidden category.",
+    "groups": [
+      { "id": "g-daily", "name": "Daily Expenses" },
+      { "id": "g-fun", "name": "Fun" },
+      { "id": "g-kid", "name": "Kids" },
+      { "id": "g-bills", "name": "Bills" },
+      { "id": "g-save", "name": "Savings" },
+      { "id": "g-inc", "name": "Income", "is_income": true }
+    ],
+    "categories": [
+      { "id": "c-groc", "name": "Groceries", "group_id": "g-daily" },
+      { "id": "c-home", "name": "Household Supplies", "group_id": "g-daily" },
+      { "id": "c-rest", "name": "Restaurants", "group_id": "g-daily" },
+      { "id": "c-gas", "name": "Gas", "group_id": "g-daily" },
+      { "id": "c-med", "name": "Pharmacy", "group_id": "g-daily" },
+      { "id": "c-cloth", "name": "Clothing", "group_id": "g-daily" },
+      { "id": "c-pet", "name": "Pets", "group_id": "g-daily" },
+      { "id": "c-gift", "name": "Gifts", "group_id": "g-fun" },
+      { "id": "c-ent", "name": "Entertainment", "group_id": "g-fun" },
+      { "id": "c-alc", "name": "Alcohol", "group_id": "g-fun" },
+      { "id": "c-kid", "name": "Kid", "group_id": "g-kid" },
+      { "id": "c-school", "name": "School", "group_id": "g-kid" },
+      { "id": "c-old", "name": "Old Hobby", "group_id": "g-fun", "hidden": true },
+      { "id": "c-elec", "name": "Electric", "group_id": "g-bills" },
+      { "id": "c-net", "name": "Internet", "group_id": "g-bills" },
+      { "id": "c-ef", "name": "Emergency Fund", "group_id": "g-save" },
+      { "id": "c-sal", "name": "Salary", "group_id": "g-inc", "is_income": true }
+    ],
+    "exclude": { "groups": ["Bills", "Savings"], "categories": [] },
+    "kinds": {
+      "grocery": "Daily Expenses / Groceries", "household": "Daily Expenses / Household Supplies", "health": "Daily Expenses / Pharmacy",
+      "clothing": "Daily Expenses / Clothing", "kids": "Kids / Kid", "restaurant": "Daily Expenses / Restaurants", "fuel": "Daily Expenses / Gas",
+      "pet": "Daily Expenses / Pets", "alcohol": "Fun / Alcohol", "electronics": "Fun / Entertainment", "gift": "Fun / Gifts",
+      "garden": "Daily Expenses / Household Supplies", "media": "Fun / Entertainment", "school": "Kids / School"
+    }
+  },
+  "large": {
+    "about": "A household that budgets in detail: 45+ receipt categories, group names with punctuation, category names with emoji, accents, an en dash and even ' / ' inside the name. Bills / Debt / Giving excluded by group, one category excluded by label.",
+    "groups": [
+      { "id": "g1", "name": "Food" },
+      { "id": "g2", "name": "Home: Kitchen & Bath" },
+      { "id": "g3", "name": "Health & Body" },
+      { "id": "g4", "name": "Kids › Adult 1's kid" },
+      { "id": "g5", "name": "Transport" },
+      { "id": "g6", "name": "Fun & Hobbies" },
+      { "id": "g7", "name": "Pets" },
+      { "id": "g8", "name": "Clothes" },
+      { "id": "g9", "name": "Gifts & Giving" },
+      { "id": "g10", "name": "Bills" },
+      { "id": "g11", "name": "Debt" },
+      { "id": "g12", "name": "Giving" },
+      { "id": "g13", "name": "Income", "is_income": true }
+    ],
+    "categories": [
+      { "id": "l01", "name": "🍎 Groceries", "group_id": "g1" },
+      { "id": "l02", "name": "Produce", "group_id": "g1" },
+      { "id": "l03", "name": "Dairy & Eggs", "group_id": "g1" },
+      { "id": "l04", "name": "Snacks", "group_id": "g1" },
+      { "id": "l05", "name": "Café & Dining", "group_id": "g1" },
+      { "id": "l06", "name": "Take-out / Delivery", "group_id": "g1" },
+      { "id": "l07", "name": "Coffee ☕", "group_id": "g1" },
+      { "id": "l08", "name": "Wine & Beer", "group_id": "g1" },
+      { "id": "l09", "name": "Cleaning", "group_id": "g2" },
+      { "id": "l10", "name": "Paper Goods", "group_id": "g2" },
+      { "id": "l11", "name": "Kitchenware", "group_id": "g2" },
+      { "id": "l12", "name": "Furniture", "group_id": "g2" },
+      { "id": "l13", "name": "Tools", "group_id": "g2" },
+      { "id": "l14", "name": "Garden – Outdoor", "group_id": "g2" },
+      { "id": "l15", "name": "Pharmacy", "group_id": "g3" },
+      { "id": "l16", "name": "Vitamins", "group_id": "g3" },
+      { "id": "l17", "name": "Hair & Skin", "group_id": "g3" },
+      { "id": "l18", "name": "Dentist", "group_id": "g3" },
+      { "id": "l19", "name": "Toys", "group_id": "g4" },
+      { "id": "l20", "name": "Kid Clothes", "group_id": "g4" },
+      { "id": "l21", "name": "School Supplies", "group_id": "g4" },
+      { "id": "l22", "name": "Diapers", "group_id": "g4" },
+      { "id": "l23", "name": "Gas / Fuel", "group_id": "g5" },
+      { "id": "l24", "name": "Car Wash", "group_id": "g5" },
+      { "id": "l25", "name": "Parking", "group_id": "g5" },
+      { "id": "l26", "name": "Transit", "group_id": "g5" },
+      { "id": "l27", "name": "Books", "group_id": "g6" },
+      { "id": "l28", "name": "Games", "group_id": "g6" },
+      { "id": "l29", "name": "Crafts", "group_id": "g6" },
+      { "id": "l30", "name": "Electronics", "group_id": "g6" },
+      { "id": "l31", "name": "Movies", "group_id": "g6" },
+      { "id": "l32", "name": "Dog Food", "group_id": "g7" },
+      { "id": "l33", "name": "Vet", "group_id": "g7" },
+      { "id": "l34", "name": "Cat Litter", "group_id": "g7" },
+      { "id": "l35", "name": "Adult 1 Clothes", "group_id": "g8" },
+      { "id": "l36", "name": "Adult 2 Clothes", "group_id": "g8" },
+      { "id": "l37", "name": "Shoes", "group_id": "g8" },
+      { "id": "l38", "name": "Birthday Gifts", "group_id": "g9" },
+      { "id": "l39", "name": "Holiday Gifts", "group_id": "g9" },
+      { "id": "l40", "name": "Gift Cards", "group_id": "g9" },
+      { "id": "l41", "name": "Cards & Wrap", "group_id": "g9" },
+      { "id": "l42", "name": "Postage", "group_id": "g9" },
+      { "id": "l43", "name": "Fees & Deposits", "group_id": "g2" },
+      { "id": "l44", "name": "Misc 🤷", "group_id": "g6" },
+      { "id": "l45", "name": "Lottery", "group_id": "g6" },
+      { "id": "l46", "name": "Batteries", "group_id": "g2" },
+      { "id": "b1", "name": "Mortgage", "group_id": "g10" },
+      { "id": "b2", "name": "Water", "group_id": "g10" },
+      { "id": "d1", "name": "Card Payment", "group_id": "g11" },
+      { "id": "v1", "name": "Charity", "group_id": "g12" },
+      { "id": "i1", "name": "Wages", "group_id": "g13", "is_income": true }
+    ],
+    "exclude": { "groups": ["Bills", "Debt", "Giving"], "categories": ["Fun & Hobbies / Lottery"] },
+    "kinds": {
+      "grocery": "Food / 🍎 Groceries", "household": "Home: Kitchen & Bath / Cleaning", "health": "Health & Body / Pharmacy",
+      "clothing": "Clothes / Adult 1 Clothes", "kids": "Kids › Adult 1's kid / Toys", "restaurant": "Food / Café & Dining",
+      "fuel": "Transport / Gas / Fuel", "pet": "Pets / Dog Food", "alcohol": "Food / Wine & Beer", "electronics": "Fun & Hobbies / Electronics",
+      "gift": "Gifts & Giving / Gift Cards", "garden": "Home: Kitchen & Bath / Garden – Outdoor", "media": "Fun & Hobbies / Books",
+      "school": "Kids › Adult 1's kid / School Supplies"
+    }
+  },
+  "slashGroup": {
+    "about": "A group whose own name contains ' / ' (Bills / Utilities), excluded by its full name in EXCLUDE_CATEGORY_GROUPS.",
+    "groups": [
+      { "id": "s1", "name": "Everyday" },
+      { "id": "s2", "name": "Bills / Utilities" },
+      { "id": "s3", "name": "Income", "is_income": true }
+    ],
+    "categories": [
+      { "id": "e1", "name": "Food", "group_id": "s1" },
+      { "id": "e2", "name": "Stuff", "group_id": "s1" },
+      { "id": "u1", "name": "Power", "group_id": "s2" },
+      { "id": "u2", "name": "Phone", "group_id": "s2" },
+      { "id": "i1", "name": "Pay", "group_id": "s3", "is_income": true }
+    ],
+    "exclude": { "groups": ["Bills / Utilities"], "categories": [] },
+    "kinds": {
+      "grocery": "Everyday / Food", "household": "Everyday / Stuff", "health": "Everyday / Stuff", "clothing": "Everyday / Stuff",
+      "kids": "Everyday / Stuff", "restaurant": "Everyday / Food", "fuel": "Everyday / Stuff", "pet": "Everyday / Stuff",
+      "alcohol": "Everyday / Food", "electronics": "Everyday / Stuff", "gift": "Everyday / Stuff", "garden": "Everyday / Stuff",
+      "media": "Everyday / Stuff", "school": "Everyday / Stuff"
+    }
+  },
+  "_shared": {
+    "accounts": [
+      { "id": "acct-chk", "name": "Joint Checking 0000" },
+      { "id": "acct-cc", "name": "Rewards Visa 9999" },
+      { "id": "acct-old", "name": "Old Savings", "closed": true },
+      { "id": "acct-inv", "name": "Brokerage", "offbudget": true }
+    ],
+    "payees": [
+      { "id": "p-fresh", "name": "FreshFields Market" },
+      { "id": "p-hmart", "name": "HomeMart" },
+      { "id": "p-zip", "name": "Zippy Fuel" },
+      { "id": "p-bistro", "name": "Lantern Bistro" },
+      { "id": "p-pharm", "name": "Corner Pharmacy" },
+      { "id": "p-bulk", "name": "BulkBarn Warehouse" },
+      { "id": "p-kiosk", "name": "Kiosk Books" },
+      { "id": "p-euro", "name": "Marché Lumière" },
+      { "id": "p-north", "name": "Northline Grocers" },
+      { "id": "p-pets", "name": "Pawsome Pets" },
+      { "id": "p-deliv", "name": "QuickBite Delivery" },
+      { "id": "p-trans", "name": "Adult 1 Savings", "transfer_acct": "acct-old" }
+    ]
+  }
+}

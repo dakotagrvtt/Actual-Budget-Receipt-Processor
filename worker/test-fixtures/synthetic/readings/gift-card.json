@@ -1,0 +1,49 @@
+{
+  "name": "gift-card",
+  "about": "Groceries plus a $50 gift card (untaxed).",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 66.48,
+    "tax": 0,
+    "tip": null,
+    "total": 66.48,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "BREAD",
+        "amount": 3.49,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "COFFEE BEANS",
+        "amount": 12.99,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "GIFT CARD",
+        "amount": 50,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "gift"
+      }
+    ]
+  }
+}

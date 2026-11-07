@@ -1,0 +1,22 @@
+{
+  "bodies": [
+    "{\"state\":{\"birthdays_and_holidays_near_this_date\":[\"Mom birthday in 3 days\"],\"store\":\"Target\",\"date\":\"2026-10-26\",\"total\":10.5,\"category_your_rules_give_this_store\":\"Daily Expenses / Groceries\",\"current_category_of_the_bank_transaction\":\"Daily Expenses / Groceries\",\"past_purchases_at_this_store\":[{\"date\":\"2026-10-01\",\"amount\":20,\"filed_as\":[\"Daily Expenses / Groceries 15 (milk)\",\"Daily Expenses / Sam 5\"]}],\"item\":\"GUM\",\"item_price\":2,\"other_items_on_receipt\":[\"MILK (whole milk)\"],\"items_this_household_filed_before\":{\"Daily Expenses / Groceries\":[\"whole milk (at Target)\"],\"Daily Expenses / Sam\":[\"gum\"]},\"similar_items_filed_before\":[{\"items\":\"gum\",\"filed_as\":\"Daily Expenses / Sam\",\"store\":null}],\"similar_items_by_category\":{\"Daily Expenses / Sam\":1},\"household_keyword\":{\"phrase\":\"gum\",\"category\":\"Daily Expenses / Sam\"}},\"questions\":{\"category\":{\"type\":\"choice\",\"instructions\":\"Which of the household's budget categories should this receipt item be filed under? Use the category descriptions, the category the household's own rules give this store, how it filed past purchases at this store, and how it filed similar items before. If household_keyword is present, the household has said items matching that phrase usually belong in that category: follow it unless this receipt clearly suggests otherwise (for example, a gift).\",\"criteria\":{\"Daily Expenses / Groceries\":\"The \\\"Groceries\\\" budget category (group: Daily Expenses)\",\"Daily Expenses / Sam\":\"Sam: Sam's clothes and snacks\",\"Fun / Gifts\":\"The \\\"Gifts\\\" budget category (group: Fun)\"}}}}",
+    "{\"state\":{\"birthdays_and_holidays_near_this_date\":[\"Mom birthday in 3 days\"],\"store\":\"Target\",\"date\":\"2026-10-26\",\"total\":10.5,\"category_your_rules_give_this_store\":\"Daily Expenses / Groceries\",\"current_category_of_the_bank_transaction\":\"Daily Expenses / Groceries\",\"past_purchases_at_this_store\":[{\"date\":\"2026-10-01\",\"amount\":20,\"filed_as\":[\"Daily Expenses / Groceries 15 (milk)\",\"Daily Expenses / Sam 5\"]}],\"item\":\"MILK (whole milk)\",\"item_price\":3.5,\"other_items_on_receipt\":[\"GUM\"],\"items_this_household_filed_before\":{\"Daily Expenses / Groceries\":[\"whole milk (at Target)\"],\"Daily Expenses / Sam\":[\"gum\"]},\"similar_items_filed_before\":[{\"items\":\"whole milk\",\"filed_as\":\"Daily Expenses / Groceries\",\"store\":\"Target\"}],\"similar_items_by_category\":{\"Daily Expenses / Groceries\":1}},\"questions\":{\"category\":{\"type\":\"choice\",\"instructions\":\"Which of the household's budget categories should this receipt item be filed under? Use the category descriptions, the category the household's own rules give this store, how it filed past purchases at this store, and how it filed similar items before. If household_keyword is present, the household has said items matching that phrase usually belong in that category: follow it unless this receipt clearly suggests otherwise (for example, a gift).\",\"criteria\":{\"Daily Expenses / Groceries\":\"The \\\"Groceries\\\" budget category (group: Daily Expenses)\",\"Daily Expenses / Sam\":\"Sam: Sam's clothes and snacks\",\"Fun / Gifts\":\"The \\\"Gifts\\\" budget category (group: Fun)\"}}}}"
+  ],
+  "urls": [
+    [
+      "http://decider.test:8080/v1/systemone",
+      "POST",
+      {
+        "Content-Type": "application/json"
+      }
+    ],
+    [
+      "http://decider.test:8080/v1/systemone",
+      "POST",
+      {
+        "Content-Type": "application/json"
+      }
+    ]
+  ]
+}

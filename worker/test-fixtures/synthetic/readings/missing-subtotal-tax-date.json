@@ -1,0 +1,49 @@
+{
+  "name": "missing-subtotal-tax-date",
+  "about": "A faded receipt: no subtotal, no tax and no date were read.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": null,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": null,
+    "tax": null,
+    "tip": null,
+    "total": 11.54,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "MILK",
+        "amount": 3.49,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "BREAD",
+        "amount": 2.99,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "SOAP",
+        "amount": 4.5,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "household"
+      }
+    ]
+  }
+}

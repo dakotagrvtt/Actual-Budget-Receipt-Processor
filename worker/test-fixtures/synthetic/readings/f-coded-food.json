@@ -1,0 +1,55 @@
+{
+  "name": "f-coded-food",
+  "about": "F marks untaxed food (the reader also says taxable: true for it); T lines are taxed.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 12.47,
+    "tax": 0.35,
+    "tip": null,
+    "total": 12.82,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 7,
+        "amount": 0.35
+      }
+    ],
+    "items": [
+      {
+        "description": "CEREAL",
+        "amount": 3.99,
+        "taxable": true,
+        "tax_code": "F",
+        "kind": "grocery"
+      },
+      {
+        "description": "MILK",
+        "amount": 3.49,
+        "taxable": true,
+        "tax_code": "F",
+        "kind": "grocery"
+      },
+      {
+        "description": "CLEANER",
+        "amount": 4.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      }
+    ]
+  }
+}

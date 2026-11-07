@@ -1,0 +1,62 @@
+{
+  "name": "refund-mixed",
+  "about": "An exchange: two purchases and a returned shirt on one receipt, net positive.",
+  "payee": "p-hmart",
+  "importedPayee": "HOMEMART #12",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "HomeMart",
+    "store_clues": [
+      "homemart.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 32.98,
+    "tax": 2.31,
+    "tip": null,
+    "total": 35.29,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 7,
+        "amount": 2.31
+      }
+    ],
+    "items": [
+      {
+        "description": "MENS SHIRT M",
+        "amount": 19.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "clothing"
+      },
+      {
+        "description": "RETURN MENS SHIRT S",
+        "amount": -19.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "clothing"
+      },
+      {
+        "description": "TOWEL SET",
+        "amount": 24.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      },
+      {
+        "description": "WASTEBASKET",
+        "amount": 7.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      }
+    ]
+  }
+}

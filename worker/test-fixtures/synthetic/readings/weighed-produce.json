@@ -1,0 +1,56 @@
+{
+  "name": "weighed-produce",
+  "about": "Weighed produce: amounts that are weight x unit price rounded to cents; no tax.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 8.83,
+    "tax": 0,
+    "tip": null,
+    "total": 8.83,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "BANANAS 2.31 LB @ 0.59/LB",
+        "amount": 1.36,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "ONIONS 1.07 LB @ 1.29/LB",
+        "amount": 1.38,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "TOMATO VINE 0.83 LB @ 3.99/LB",
+        "amount": 3.31,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "PEARS 1.555 LB @ 1.79/LB",
+        "amount": 2.78,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      }
+    ]
+  }
+}

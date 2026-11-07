@@ -1,3 +1,4 @@
+// dates.js: parsing a printed receipt date and accepting it only when it is plausible next to the upload date.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCandidates, resolveDate } from './dates.js';

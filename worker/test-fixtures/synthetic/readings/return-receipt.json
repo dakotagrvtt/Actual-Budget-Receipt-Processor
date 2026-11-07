@@ -1,0 +1,35 @@
+{
+  "name": "return-receipt",
+  "about": "A refund receipt: is_return and a negative total.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": -24.99,
+    "tax": -1.75,
+    "tip": null,
+    "total": -26.74,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": true,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "RETURN: RAIN JACKET",
+        "amount": -24.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "clothing"
+      }
+    ]
+  }
+}

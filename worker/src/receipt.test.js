@@ -5,10 +5,9 @@ import assert from 'node:assert/strict';
 import { config } from './config.js';
 import { setRules } from './rules.js';
 
-const { chooseAction, storeConsensus, categorizeReceipt } = await import('./receipt.js');
+const { chooseAction, storeConsensus, categorizeReceipt, handleReceipt } = await import('./receipt.js');
 
-const DAY = 86400000;
-const saved = JSON.parse(JSON.stringify({ splits: config.splits, match: config.match, ruleFallback: config.ruleFallback, applyThenReview: config.applyThenReview, categoryMinConfidence: config.categoryMinConfidence, moveMinConfidence: config.moveMinConfidence, keywordMode: config.keywordMode, occasions: config.occasions, excludeGroups: config.excludeGroups }));
+const saved = JSON.parse(JSON.stringify({ receiptCheck: config.receiptCheck, receiptCheckMinConfidence: config.receiptCheckMinConfidence, splits: config.splits, match: config.match, ruleFallback: config.ruleFallback, applyThenReview: config.applyThenReview, categoryMinConfidence: config.categoryMinConfidence, moveMinConfidence: config.moveMinConfidence, moveMinMargin: config.moveMinMargin, keywordMode: config.keywordMode, occasions: config.occasions, excludeGroups: config.excludeGroups }));
 afterEach(() => {
   mock.restoreAll();
   Object.assign(config, JSON.parse(JSON.stringify(saved)));
@@ -50,8 +49,8 @@ test('chooseAction: moving a whole charge needs an item that is confident of the
   const problems = [];
   const unsure = receiptOf({ category: 'B', confidence: 0.3 });
   assert.equal(chooseAction([part('B')], unsure, 'id-A', 'A', problems), null);
-  assert.deepEqual(problems, ['the receipt reads as "B", but no item is at least 50% sure of it, so the charge stays "A"']);
-  assert.equal(chooseAction([part('B')], receiptOf(sure('B', 0.5)), 'id-A', 'A', []), 'categorize'); // at the bar counts
+  assert.deepEqual(problems, ['the receipt reads as "B", but no item is at least 60% sure of it with a clear lead over the next category, so the charge stays "A"']);
+  assert.equal(chooseAction([part('B')], receiptOf(sure('B', 0.6)), 'id-A', 'A', []), 'categorize'); // at the bar counts
 });
 
 test('chooseAction: a fallback or confidence-less item is not a reason to move the charge', () => {
@@ -63,6 +62,14 @@ test('chooseAction: MOVE_MIN_CONFIDENCE is the bar for moving', () => {
   config.moveMinConfidence = 0.8;
   assert.equal(chooseAction([part('B')], receiptOf(sure('B', 0.7)), 'id-A', 'A', []), null);
   assert.equal(chooseAction([part('B')], receiptOf(sure('B', 0.8)), 'id-A', 'A', []), 'categorize');
+});
+
+test('chooseAction: a confident but near-tied item does not move the charge (MOVE_MIN_MARGIN)', () => {
+  config.moveMinMargin = 0.2;
+  const tied = { category: 'B', confidence: 0.65, margin: 0.1 };
+  assert.equal(chooseAction([part('B')], receiptOf(tied), 'id-A', 'A', []), null);
+  assert.equal(chooseAction([part('B')], receiptOf({ ...tied, margin: 0.2 }), 'id-A', 'A', []), 'categorize'); // at the bar counts
+  assert.equal(chooseAction([part('B')], receiptOf(sure('B', 0.9)), 'id-A', 'A', []), 'categorize'); // unknown margin passes
 });
 
 test('chooseAction: with OVERWRITE_CATEGORIZED off a confident move goes to review instead', () => {
@@ -97,7 +104,7 @@ const LABELS = new Map([['A / One', 'a'], ['B / Two', 'b'], ['C / Three', 'c']])
 const ID2LABEL = new Map([...LABELS].map(([label, id]) => [id, label]));
 const TXN = { id: 't1', payeeName: 'Target', date: '2026-10-26', amount: -1000 };
 
-/** The decider says what `answers` has for each item description: [category, confidence], or a raw reply. */
+/** The decider says what `answers` has for each item description: [category, confidence, probabilities?], or a raw reply. */
 function mockDecider(answers) {
   mock.method(console, 'log', () => {});
   mock.method(globalThis, 'fetch', async (url, init) => {
@@ -105,7 +112,7 @@ function mockDecider(answers) {
     const { state } = JSON.parse(init.body);
     const a = answers[state.item];
     const choice = a?.[0];
-    return new Response(JSON.stringify({ answers: { category: { choice, confidence: a?.[1] } } }));
+    return new Response(JSON.stringify({ answers: { category: { choice, confidence: a?.[1], ...(a?.[2] ? { probabilities: a[2] } : {}) } } }));
   });
 }
 async function settle(answers, { currentLabel = 'A / One', ruleCategory = null, items = Object.keys(answers) } = {}) {
@@ -140,6 +147,25 @@ test('settling: staying in the store category uses CATEGORY_MIN_CONFIDENCE, movi
   config.moveMinConfidence = 0.7;
   const { receipt } = await settle({ X: ['A / One', 0.45], Y: ['B / Two', 0.6], Z: ['B / Two', 0.7] });
   assert.deepEqual(receipt.items.map((i) => [i.category, i.fellBack ?? false]), [['A / One', false], ['A / One', true], ['B / Two', false]]);
+});
+
+test('settling: moving out needs a clear lead (MOVE_MIN_MARGIN); staying does not; an unknown margin passes', async () => {
+  config.categoryMinConfidence = 0.5;
+  config.moveMinConfidence = 0.4;
+  config.moveMinMargin = 0.2;
+  const clear = { 'A / One': 0.1, 'B / Two': 0.7, 'C / Three': 0.2 };
+  const close = { 'A / One': 0.2, 'B / Two': 0.45, 'C / Three': 0.35 }; // confident enough, but only 0.10 ahead
+  const stay = { 'A / One': 0.52, 'B / Two': 0.48 };
+  const { receipt } = await settle({ X: ['B / Two', 0.9, clear], Y: ['B / Two', 0.9, close], Z: ['A / One', 0.9, stay], W: ['B / Two', 0.9] });
+  assert.deepEqual(receipt.items.map((i) => [i.category, i.fellBack ?? false]), [['B / Two', false], ['A / One', true], ['A / One', false], ['B / Two', false]]);
+});
+
+test('settling: the decider\'s own numbers stay on item.decided after the item fell back', async () => {
+  const { receipt } = await settle({ X: ['B / Two', 0.9, { 'B / Two': 0.45, 'C / Three': 0.4, 'A / One': 0.15 }] });
+  const [it] = receipt.items;
+  assert.equal(it.fellBack, true);
+  assert.deepEqual([it.decided.category, it.decided.confidence], ['B / Two', 0.45]);
+  assert.ok(Math.abs(it.decided.margin - 0.05) < 1e-12);
 });
 
 test('settling: an invalid answer falls back too, and the doubt shows the bad answer', async () => {
@@ -207,4 +233,240 @@ test('settling: the store name comes from the bank payee, then the imported paye
   const r3 = { merchant: 'Receipt Name', date: '2026-10-26', total: 1, items: [{ description: 'X', amount: 1 }] };
   await categorizeReceipt(r3, { id: 't', date: '2026-10-26', amount: -100 }, LABELS, ID2LABEL, null, [], {});
   assert.equal(r3.store, 'Receipt Name');
+});
+
+// ---- categorizeReceipt with the remote decider ----
+const fs = await import('node:fs');
+const os = await import('node:os');
+const path = await import('node:path');
+const { default: actualApi } = await import('@actual-app/api');
+
+async function remoteWorld({ names = [], seedWords = [] } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'receipt-remote-test-'));
+  process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+  const before = { decider: { ...config.decider }, privacy: { ...config.privacy }, deciderUrl: config.deciderUrl, llmUrl: config.llmUrl, categoryNotesPath: config.categoryNotesPath };
+  Object.assign(config, { deciderUrl: 'https://api.typesafe.test', llmUrl: 'http://reader.test', categoryNotesPath: path.join(dir, 'notes.json') });
+  Object.assign(config.decider, { provider: 'remote', apiKey: 'k', remoteModel: 'jev-latest', preview: null });
+  Object.assign(config.privacy, { wordsPath: path.join(dir, 'pw.json'), scanCachePath: path.join(dir, 'sc.json'), seedWords });
+  config.occasions.enabled = false;
+  mock.method(console, 'log', () => {});
+  mock.method(actualApi, 'getPayees', async () => [{ id: 'p1', name: 'Target' }, { id: 'p2', name: "Alex's Checking", transfer_acct: 'acct-1' }]);
+  const sent = [];
+  mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).includes('reader.test')) {
+      const list = JSON.parse(JSON.parse(init.body).messages.at(-1).content);
+      const results = list.map((e) => ({ id: e.id, names: names.filter((n) => e.text.toLowerCase().includes(n.toLowerCase())) }));
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ results }) } }] }));
+    }
+    sent.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ answers: { category: { choice: 'C01', confidence: 0.9 } } }));
+  });
+  return { sent, restore: () => { Object.assign(config.decider, before.decider); Object.assign(config.privacy, before.privacy); Object.assign(config, { deciderUrl: before.deciderUrl, llmUrl: before.llmUrl, categoryNotesPath: before.categoryNotesPath }); } };
+}
+
+test('remote: the store sent is the Actual payee, never the bank text; a transfer payee is no business, so its first name is still hidden', async () => {
+  const world = await remoteWorld({ names: ['Alex'] });
+  try {
+    const receipt = { merchant: 'Target', date: '2026-10-26', total: 10, items: [{ description: 'GIFT CARD FOR ALEX', amount: 2 }] };
+    const txn = { ...TXN, imported_payee: 'POS 4242 TARGET 1234 SPRINGFIELD IL' };
+    await categorizeReceipt(receipt, txn, LABELS, ID2LABEL, 'A / One', [], {});
+    assert.equal(receipt.payee, 'Target');
+    assert.equal(world.sent[0].state.store, 'Target');
+    assert.equal(world.sent[0].state.item, 'GIFT CARD FOR Person A');
+    assert.ok(!JSON.stringify(world.sent).includes('4242'));
+    // a charge whose payee is a transfer account gets no store at all
+    world.sent.length = 0;
+    const r2 = { merchant: 'Target', date: '2026-10-26', total: 10, items: [{ description: 'TOWELS', amount: 2 }] };
+    await categorizeReceipt(r2, { ...TXN, payeeName: "Alex's Checking", payeeIsTransfer: true }, LABELS, ID2LABEL, 'A / One', [], {});
+    assert.equal(r2.payee, null);
+    assert.equal(world.sent[0].state.store, null);
+  } finally {
+    world.restore();
+  }
+});
+
+test('remote: an item the privacy check holds back is reported as such in the review reasons, not as an invalid answer', async () => {
+  const world = await remoteWorld({ seedWords: ['budget'] }); // "budget" is in the fixed question text: everything is held back
+  try {
+    const receipt = { merchant: 'Target', date: '2026-10-26', total: 10, items: [{ description: 'TOWELS', amount: 2 }] };
+    const doubts = [];
+    await categorizeReceipt(receipt, TXN, LABELS, ID2LABEL, 'A / One', doubts, {});
+    assert.equal(world.sent.length, 0);
+    const text = doubts.join('\n');
+    assert.match(text, /held back from the hosted decider \(privacy check\)/);
+    assert.ok(!/invalid answer/.test(text), text);
+  } finally {
+    world.restore();
+  }
+});
+
+test('handleReceipt: discount lines are folded into their items before anything else, live and in replay alike', async () => {
+  mock.method(console, 'log', () => {});
+  const read = () => ({ merchant: 'Target', date: '2026-10-26', total: 9, subtotal: 9, payment_method: 'cash', items: [{ description: 'MILK', amount: 5 }, { description: 'GUM', amount: 5 }, { description: 'INSTANT SAVINGS', amount: -1 }] });
+  for (const opts of [{}, { replay: true }]) {
+    const { summary } = await handleReceipt({ basename: 'a.jpg' }, read(), 'test', LABELS, opts);
+    assert.deepEqual(summary.receipt.items.map((i) => [i.description, i.amount]), [['MILK', 5], ['GUM', 4]]);
+    assert.equal(summary.receipt.total, 9); // the receipt's own totals are untouched
+  }
+});
+
+// ---- the per-receipt check (RECEIPT_CHECK): "is this all one kind of purchase?" ----
+
+/** The decider answers each item from `items` ([choice, probabilities]) and the whole-purchase question from `whole`. Returns the requests seen. */
+function mockWholeDecider({ items, whole }) {
+  const requests = [];
+  mock.method(console, 'log', () => {});
+  mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/health')) return new Response('ok');
+    const { state } = JSON.parse(init.body);
+    requests.push(state);
+    const [choice, probabilities] = state.items_on_receipt ? whole : items[state.item];
+    return new Response(JSON.stringify({ answers: { category: { choice, confidence: 0.5, probabilities } } }));
+  });
+  return requests;
+}
+const FOOD = 'A / One';
+const REST = 'B / Two';
+const costco = (...rows) => ({ merchant: 'Costco', date: '2026-10-26', total: 13.78, items: rows.map(([description, amount]) => ({ description, amount })) });
+
+test('receipt check: a food-court visit that the items split two ways ends up whole in Restaurants', async () => {
+  config.receiptCheck = true;
+  setRules([{ id: 'r', stage: null, conditionsOp: 'and', conditions: [{ field: 'payee', op: 'is', value: 'p-costco' }], actions: [{ op: 'set', field: 'category', value: 'a' }] }], { payees: [{ id: 'p-costco', name: 'Costco' }] });
+  const requests = mockWholeDecider({
+    // the coke reads as a grocery by itself (not clearly), the chicken as a restaurant meal
+    items: { '20 OZ COKE': [FOOD, { [FOOD]: 0.5, [REST]: 0.4, 'C / Three': 0.1 }], 'CHICKEN BAKE': [REST, { [REST]: 0.6, [FOOD]: 0.3, 'C / Three': 0.1 }], 'CHICKEN STRP': [FOOD, { [FOOD]: 0.45, [REST]: 0.4, 'C / Three': 0.15 }] },
+    whole: [REST, { [REST]: 0.75, [FOOD]: 0.2, 'C / Three': 0.05 }],
+  });
+  const receipt = costco(['20 OZ COKE', 1.58], ['CHICKEN BAKE', 3.99], ['CHICKEN STRP', 6.99]);
+  const doubts = [];
+  await categorizeReceipt(receipt, { ...TXN, payeeName: 'Costco', payee: 'p-costco', amount: -1378 }, LABELS, ID2LABEL, FOOD, doubts, {});
+  assert.equal(requests.length, 4, 'one question per item and one for the whole purchase');
+  assert.deepEqual(receipt.items.map((i) => [i.category, i.fellBack ?? false]), [[REST, false], [REST, false], [REST, false]]);
+  assert.deepEqual(receipt.items.map((i) => Boolean(i.receiptSaid)), [true, false, true]);
+  assert.equal(receipt.receiptCheck.category, REST);
+  assert.deepEqual(receipt.receiptCheck.moved, ['20 OZ COKE', 'CHICKEN STRP']);
+  assert.deepEqual(doubts, []);
+  // the whole charge is one category: the transaction (filed under Groceries by the rule) moves, since an item is confident of Restaurants
+  const { allocate } = await import('./reconcile.js');
+  const { allocation } = allocate(receipt, LABELS, 1378);
+  assert.deepEqual(allocation.map((a) => [a.label, a.cents]), [[REST, 1378]]);
+  assert.equal(chooseAction(allocation, receipt, 'a', FOOD, []), 'categorize');
+});
+
+test('receipt check: a real mixed run still splits, because the clear items beat the whole-purchase answer', async () => {
+  config.receiptCheck = true;
+  mockWholeDecider({
+    items: { MILK: [FOOD, { [FOOD]: 0.85, [REST]: 0.05, 'C / Three': 0.1 }], SPONGES: ['C / Three', { 'C / Three': 0.8, [FOOD]: 0.15, [REST]: 0.05 }], EGGS: [FOOD, { [FOOD]: 0.9, 'C / Three': 0.1 }] },
+    whole: [FOOD, { [FOOD]: 0.6, 'C / Three': 0.35, [REST]: 0.05 }],
+  });
+  const receipt = costco(['MILK', 4], ['SPONGES', 5], ['EGGS', 4]);
+  await categorizeReceipt(receipt, { ...TXN, payeeName: 'Costco' }, LABELS, ID2LABEL, FOOD, [], {});
+  assert.deepEqual(receipt.items.map((i) => i.category), [FOOD, 'C / Three', FOOD]);
+  assert.deepEqual(receipt.items.map((i) => Boolean(i.receiptSaid)), [false, false, false]);
+  assert.deepEqual(receipt.receiptCheck.moved, []);
+});
+
+test('receipt check: an unclear whole-purchase answer changes nothing, and an unclear one against the store category leaves items there', async () => {
+  config.receiptCheck = true;
+  // Restaurants wins the whole purchase with 0.45: under the bar, so the items stand (and the unsure one falls back as before)
+  mockWholeDecider({
+    items: { X: [FOOD, { [FOOD]: 0.52, [REST]: 0.48 }], Y: [REST, { [REST]: 0.5, [FOOD]: 0.45, 'C / Three': 0.05 }] },
+    whole: [REST, { [REST]: 0.45, [FOOD]: 0.4, 'C / Three': 0.15 }],
+  });
+  const a = costco(['X', 2], ['Y', 2]);
+  await categorizeReceipt(a, { ...TXN, payeeName: 'Costco' }, LABELS, ID2LABEL, FOOD, [], {});
+  assert.deepEqual(a.items.map((i) => [i.category, Boolean(i.receiptSaid), i.fellBack ?? false]), [[FOOD, false, false], [FOOD, false, true]]);
+  // Restaurants wins the whole purchase with 0.55, only 0.1 ahead of Groceries: confident enough to pull the unclear items in,
+  // but not clear enough to move them out of the store's Groceries, so they end up there (as unsure items always did)
+  mockWholeDecider({
+    items: { X: [FOOD, { [FOOD]: 0.5, [REST]: 0.4, 'C / Three': 0.1 }], Y: ['C / Three', { 'C / Three': 0.4, [REST]: 0.35, [FOOD]: 0.25 }] },
+    whole: [REST, { [REST]: 0.55, [FOOD]: 0.45 }],
+  });
+  const b = costco(['X', 2], ['Y', 2]);
+  await categorizeReceipt(b, { ...TXN, payeeName: 'Costco' }, LABELS, ID2LABEL, FOOD, [], {});
+  assert.deepEqual(b.items.map((i) => [i.category, Boolean(i.receiptSaid), i.fellBack ?? false]), [[FOOD, true, true], [FOOD, true, true]]);
+});
+
+test('receipt check: off, a one-item receipt, and a receipt the keywords filed completely ask no whole-purchase question', async () => {
+  config.receiptCheck = false;
+  let requests = mockWholeDecider({ items: { X: [FOOD, { [FOOD]: 0.9 }], Y: [REST, { [REST]: 0.9 }] }, whole: [REST, { [REST]: 0.9 }] });
+  const off = costco(['X', 2], ['Y', 2]);
+  await categorizeReceipt(off, { ...TXN, payeeName: 'Costco' }, LABELS, ID2LABEL, FOOD, [], {});
+  assert.equal(requests.length, 2);
+  assert.equal(off.receiptCheck, undefined);
+  config.receiptCheck = true;
+  requests = mockWholeDecider({ items: { X: [FOOD, { [FOOD]: 0.9 }] }, whole: [REST, { [REST]: 0.9 }] });
+  const one = costco(['X', 2]);
+  await categorizeReceipt(one, { ...TXN, payeeName: 'Costco' }, LABELS, ID2LABEL, FOOD, [], {});
+  assert.equal(requests.length, 1);
+  assert.equal(one.receiptCheck, undefined);
+});
+
+test('receipt check: the whole-purchase request holds every item with its price and no single item; a settled receipt logs the answer', async () => {
+  config.receiptCheck = true;
+  const requests = mockWholeDecider({ items: { X: [FOOD, { [FOOD]: 0.9 }], Y: [FOOD, { [FOOD]: 0.9 }] }, whole: [FOOD, { [FOOD]: 0.9 }] });
+  const receipt = costco(['X', 2], ['Y', 3.5]);
+  await categorizeReceipt(receipt, { ...TXN, payeeName: 'Costco' }, LABELS, ID2LABEL, FOOD, [], {});
+  const whole = requests.at(-1);
+  assert.deepEqual(whole.items_on_receipt, [{ item: 'X', price: 2 }, { item: 'Y', price: 3.5 }]);
+  for (const k of ['item', 'item_price', 'other_items_on_receipt']) assert.equal(k in whole, false, k);
+  const { receiptCheckLine } = await import('./receipt.js');
+  assert.match(receiptCheckLine({ category: REST, confidence: 0.75, margin: 0.55, moved: ['COKE'] }), /^whole purchase: Two 75%, 55% ahead of the next; pulled into it: COKE$/);
+  assert.match(receiptCheckLine({ category: REST, confidence: 0.4, margin: null, moved: [] }), /under 50%; items unchanged/);
+  assert.match(receiptCheckLine({ category: null, invalid: 'reply is not JSON', moved: [] }), /no usable answer/);
+});
+
+test('history: it ends the day before the purchase date, live, replay and item-test alike; undated means today', async () => {
+  const { historyEnd } = await import('./receipt.js');
+  assert.equal(historyEnd('2026-10-26'), '2026-10-25');
+  assert.equal(historyEnd(null), null);
+  assert.equal(historyEnd('2026-03-01'), '2026-02-28');
+});
+
+test('receipt check: an item that settling would keep where it is is not pulled (the gate it will face, not always the move gate)', async () => {
+  config.receiptCheck = true;
+  config.moveMinConfidence = 0.6; // as in .env.example: moving out of the store's category is harder than staying
+  // Groceries is the store's category. SNACKS stays there at 58% (30 ahead of Home), the TV is clearly Home; the receipt answer says Home 62%
+  mockWholeDecider({
+    items: { SNACKS: [FOOD, { [FOOD]: 0.58, 'C / Three': 0.28, [REST]: 0.14 }], TV: ['C / Three', { 'C / Three': 0.9, [FOOD]: 0.06, [REST]: 0.04 }] },
+    whole: ['C / Three', { 'C / Three': 0.62, [FOOD]: 0.37, [REST]: 0.01 }],
+  });
+  const receipt = costco(['SNACKS', 5], ['TV', 300]);
+  await categorizeReceipt(receipt, { ...TXN, payeeName: 'Costco' }, LABELS, ID2LABEL, FOOD, [], {});
+  assert.deepEqual(receipt.items.map((i) => [i.category, Boolean(i.receiptSaid)]), [[FOOD, false], ['C / Three', false]]);
+  // the food-court case still pulls: COKE is only 15 ahead of Restaurants
+  mockWholeDecider({
+    items: { COKE: [FOOD, { [FOOD]: 0.55, [REST]: 0.4, 'C / Three': 0.05 }], BAKE: [REST, { [REST]: 0.7, [FOOD]: 0.2, 'C / Three': 0.1 }] },
+    whole: [REST, { [REST]: 0.75, [FOOD]: 0.2, 'C / Three': 0.05 }],
+  });
+  const court = costco(['COKE', 1.58], ['BAKE', 3.99]);
+  await categorizeReceipt(court, { ...TXN, payeeName: 'Costco' }, LABELS, ID2LABEL, FOOD, [], {});
+  assert.deepEqual(court.items.map((i) => [i.category, Boolean(i.receiptSaid)]), [[REST, true], [REST, false]]);
+});
+
+test('receipt check: items pulled into the store\'s own category are store defaults (fellBack, noted as such), not picks', async () => {
+  config.receiptCheck = true;
+  const { allocate, partNote } = await import('./reconcile.js');
+  mockWholeDecider({
+    items: { COKE: [FOOD, { [FOOD]: 0.5, [REST]: 0.4, 'C / Three': 0.1 }], STRP: ['C / Three', { 'C / Three': 0.45, [REST]: 0.4, [FOOD]: 0.15 }] },
+    whole: [REST, { [REST]: 0.8, [FOOD]: 0.15, 'C / Three': 0.05 }],
+  });
+  const receipt = costco(['COKE', 2], ['STRP', 3]);
+  const doubts = [];
+  // Restaurants is the store's category here
+  await categorizeReceipt(receipt, { ...TXN, payeeName: 'Costco' }, LABELS, ID2LABEL, REST, doubts, {});
+  assert.deepEqual(receipt.items.map((i) => [i.category, i.fellBack, i.fellBackFrom, i.originalConfidence]), [[REST, true, FOOD, 0.5], [REST, true, 'C / Three', 0.45]]);
+  assert.match(doubts.join('\n'), /wasn't sure, so these went to the store's category "Two": COKE \(model said One 50%\), STRP/);
+  const { allocation } = allocate({ ...receipt, subtotal: 5 }, LABELS, 500);
+  assert.match(partNote(allocation[0], ', ', 200), /\(store default\)$/);
+});
+
+test('receipt check: moving a whole charge on the receipt answer alone raises a doubt; one item\'s own pick stops it', async () => {
+  const { receiptAnswerDoubt } = await import('./receipt.js');
+  const a = [{ label: REST, categoryId: 'b' }];
+  const pulled = (over = {}) => ({ category: REST, receiptSaid: { category: FOOD }, ...over });
+  assert.match(receiptAnswerDoubt('categorize', a, { items: [pulled(), pulled()] }, 'a', FOOD), /moved from "A \/ One" to "B \/ Two" on the whole-purchase answer alone/);
+  assert.equal(receiptAnswerDoubt('categorize', a, { items: [pulled(), pulled({ receiptSaid: undefined })] }, 'a', FOOD), null);
+  assert.equal(receiptAnswerDoubt('categorize', a, { items: [pulled()] }, null, null), null, 'an uncategorized charge is filled, not moved');
+  assert.equal(receiptAnswerDoubt('confirm', a, { items: [pulled()] }, 'b', REST), null);
 });

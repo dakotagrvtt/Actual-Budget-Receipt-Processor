@@ -1,0 +1,53 @@
+{
+  "name": "canada-hst",
+  "about": "A Canadian HST receipt (13%, over TAX_BY_ITEM_MAX_RATE by default): H marks taxed lines.",
+  "payee": "p-north",
+  "importedPayee": "NORTHLINE GROCERS",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "Northline Grocers",
+    "store_clues": [],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "CAD",
+    "subtotal": 40.97,
+    "tax": 4.68,
+    "tip": null,
+    "total": 45.65,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "H",
+        "rate": 13,
+        "amount": 4.68
+      }
+    ],
+    "items": [
+      {
+        "description": "APPLES",
+        "amount": 4.99,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "LAUNDRY PODS",
+        "amount": 15.99,
+        "taxable": true,
+        "tax_code": "H",
+        "kind": "household"
+      },
+      {
+        "description": "PHONE CHARGER",
+        "amount": 19.99,
+        "taxable": true,
+        "tax_code": "H",
+        "kind": "electronics"
+      }
+    ]
+  }
+}

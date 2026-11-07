@@ -1,0 +1,104 @@
+{
+  "name": "coupons",
+  "about": "Coupons: TPD/<number> tied to an earlier and a later item, a number no item has, a plain MFR coupon, a coupon as big as its item, and a leading store coupon.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 17.66,
+    "tax": 1.08,
+    "tip": null,
+    "total": 18.74,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 7,
+        "amount": 1.08
+      }
+    ],
+    "items": [
+      {
+        "description": "STORE COUPON",
+        "amount": -1,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "4400012 CEREAL",
+        "amount": 4.99,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "JUICE OJ",
+        "amount": 3.49,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "TPD/4400012",
+        "amount": -1.5,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "TPD/7777777",
+        "amount": -0.8,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "TPD/5500033",
+        "amount": -2,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "5500033 DETERGENT",
+        "amount": 11.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      },
+      {
+        "description": "GUM",
+        "amount": 1,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "grocery"
+      },
+      {
+        "description": "MFR COUPON",
+        "amount": -1,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "LIP BALM",
+        "amount": 2.49,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "health"
+      }
+    ]
+  }
+}

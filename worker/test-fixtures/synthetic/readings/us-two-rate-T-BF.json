@@ -1,0 +1,67 @@
+{
+  "name": "us-two-rate-T-BF",
+  "about": "T (general 6%) and BF (food 2.5%), with an untaxed N line.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 24.47,
+    "tax": 0.52,
+    "tip": null,
+    "total": 24.99,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 6,
+        "amount": 0.27
+      },
+      {
+        "code": "BF",
+        "rate": 2.5,
+        "amount": 0.25
+      }
+    ],
+    "items": [
+      {
+        "description": "APPLESAUCE",
+        "amount": 2.99,
+        "taxable": true,
+        "tax_code": "BF",
+        "kind": "grocery"
+      },
+      {
+        "description": "FROZEN PIZZA",
+        "amount": 6.99,
+        "taxable": true,
+        "tax_code": "BF",
+        "kind": "grocery"
+      },
+      {
+        "description": "PAPER PLATES",
+        "amount": 4.49,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      },
+      {
+        "description": "PRESCRIPTION",
+        "amount": 10,
+        "taxable": false,
+        "tax_code": "N",
+        "kind": "health"
+      }
+    ]
+  }
+}

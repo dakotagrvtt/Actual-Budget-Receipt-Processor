@@ -1,0 +1,76 @@
+{
+  "name": "duplicates-qty",
+  "about": "The same yogurt printed three times, a \"3 @\" line and a \"Net Price\" style repeat the reader kept.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 12.75,
+    "tax": 0.63,
+    "tip": null,
+    "total": 13.38,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 6.25,
+        "amount": 0.63
+      }
+    ],
+    "items": [
+      {
+        "description": "YOGURT CUP",
+        "amount": 0.89,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "YOGURT CUP",
+        "amount": 0.89,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "YOGURT CUP",
+        "amount": 0.89,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "3 @ 2.50 CAT FOOD CAN",
+        "amount": 7.5,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "pet"
+      },
+      {
+        "description": "SPONGE",
+        "amount": 1.29,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      },
+      {
+        "description": "SPONGE",
+        "amount": 1.29,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      }
+    ]
+  }
+}

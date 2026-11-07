@@ -1,6 +1,7 @@
+// calendar.js: computed US holidays and the occasions near a purchase date.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { usHolidays, occasionsNear } from './calendar.js';
+import { usHolidays, occasionsNear, occasionDetails } from './calendar.js';
 
 const date = (year, name) => usHolidays(year).find((h) => h.name === name).date;
 
@@ -43,4 +44,11 @@ test('occasionsNear: a holiday later in the same month', async () => {
 
 test('occasionsNear: no date, no occasions', async () => {
   assert.deepEqual(await occasionsNear(null), []);
+});
+
+test('occasionDetails: only the built-in holiday list is marked builtin; the text is the same as occasionsNear', async () => {
+  const [h] = await occasionDetails('2026-06-18');
+  assert.deepEqual([h.name, h.source, h.builtin, h.when], ["Father's Day", 'US holiday', true, '3 day(s) after the purchase']);
+  assert.equal(h.text, (await occasionsNear('2026-06-18'))[0]);
+  assert.equal(usHolidays(2026).every((x) => x.builtin === true), true);
 });

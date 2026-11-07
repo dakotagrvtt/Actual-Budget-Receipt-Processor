@@ -1,0 +1,49 @@
+{
+  "name": "cash-back",
+  "about": "Debit with cash back: the bank charge includes $40.00 cash back, printed as a line.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 46.48,
+    "tax": 0,
+    "tip": null,
+    "total": 46.48,
+    "payment_method": "debit with cash back",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "MILK",
+        "amount": 3.49,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "EGGS",
+        "amount": 2.99,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "CASH BACK",
+        "amount": 40,
+        "taxable": false,
+        "tax_code": null,
+        "kind": null
+      }
+    ]
+  }
+}

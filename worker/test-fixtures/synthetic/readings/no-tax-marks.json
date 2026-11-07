@@ -1,0 +1,49 @@
+{
+  "name": "no-tax-marks",
+  "about": "Tax printed, but no line has a tax mark (taxable null everywhere).",
+  "payee": "p-pets",
+  "importedPayee": "PAWSOME PETS #3",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "Pawsome Pets",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 64.97,
+    "tax": 4.55,
+    "tip": null,
+    "total": 69.52,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "DOG FOOD 30LB",
+        "amount": 42.99,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "pet"
+      },
+      {
+        "description": "CAT LITTER",
+        "amount": 14.99,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "pet"
+      },
+      {
+        "description": "CHEW TOY",
+        "amount": 6.99,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "pet"
+      }
+    ]
+  }
+}

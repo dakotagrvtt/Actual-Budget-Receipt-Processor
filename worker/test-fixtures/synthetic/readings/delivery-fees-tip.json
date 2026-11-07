@@ -1,0 +1,63 @@
+{
+  "name": "delivery-fees-tip",
+  "about": "A delivery order: two meals, a service fee, a delivery fee, a small-order fee and a tip.",
+  "payee": "p-deliv",
+  "importedPayee": "QUICKBITE*ORDER 55",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "QuickBite Delivery",
+    "store_clues": [
+      "quickbite.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 29.67,
+    "tax": 1.72,
+    "tip": 5,
+    "total": 36.39,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "PAD THAI",
+        "amount": 14.95,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "restaurant"
+      },
+      {
+        "description": "SPRING ROLLS",
+        "amount": 6.5,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "restaurant"
+      },
+      {
+        "description": "SERVICE FEE",
+        "amount": 3.23,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "DELIVERY FEE",
+        "amount": 2.99,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "SMALL ORDER FEE",
+        "amount": 2,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      }
+    ]
+  }
+}

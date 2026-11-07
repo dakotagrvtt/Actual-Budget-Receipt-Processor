@@ -1,0 +1,67 @@
+{
+  "name": "us-two-rate-T-TF",
+  "about": "T (general 7%) and TF (food 1.75%) codes.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 19.26,
+    "tax": 0.94,
+    "tip": null,
+    "total": 20.2,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 7,
+        "amount": 0.8
+      },
+      {
+        "code": "TF",
+        "rate": 1.75,
+        "amount": 0.14
+      }
+    ],
+    "items": [
+      {
+        "description": "CHIPS",
+        "amount": 3.49,
+        "taxable": true,
+        "tax_code": "TF",
+        "kind": "grocery"
+      },
+      {
+        "description": "SALSA",
+        "amount": 4.29,
+        "taxable": true,
+        "tax_code": "TF",
+        "kind": "grocery"
+      },
+      {
+        "description": "BATTERIES",
+        "amount": 8.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      },
+      {
+        "description": "NOTEBOOK",
+        "amount": 2.49,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      }
+    ]
+  }
+}

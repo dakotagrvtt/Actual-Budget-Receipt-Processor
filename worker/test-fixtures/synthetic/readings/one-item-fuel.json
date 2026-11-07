@@ -1,0 +1,33 @@
+{
+  "name": "one-item-fuel",
+  "about": "One fuel line at a gas station, no tax line (tax included in the pump price).",
+  "payee": "p-zip",
+  "importedPayee": "ZIPPY FUEL 3318",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "Zippy Fuel",
+    "store_clues": [],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": null,
+    "tax": null,
+    "tip": null,
+    "total": 41.07,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "UNLEADED 11.732 GAL @ 3.501",
+        "amount": 41.07,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "fuel"
+      }
+    ]
+  }
+}

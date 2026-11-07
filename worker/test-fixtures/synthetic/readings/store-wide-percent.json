@@ -1,0 +1,69 @@
+{
+  "name": "store-wide-percent",
+  "about": "A 10%-off-everything line printed at the end, after a small last item in another category.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 51.72,
+    "tax": 0.49,
+    "tip": null,
+    "total": 52.21,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 7,
+        "amount": 0.49
+      }
+    ],
+    "items": [
+      {
+        "description": "SALMON FILLET",
+        "amount": 18.99,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "STEAK RIBEYE",
+        "amount": 21.5,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "OLIVE OIL",
+        "amount": 9.99,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "BDAY CARD",
+        "amount": 6.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "gift"
+      },
+      {
+        "description": "10% OFF ENTIRE PURCHASE",
+        "amount": -5.75,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      }
+    ]
+  }
+}

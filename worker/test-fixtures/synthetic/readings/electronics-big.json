@@ -1,0 +1,55 @@
+{
+  "name": "electronics-big",
+  "about": "One expensive TV and a cable; amounts over a thousand.",
+  "payee": "p-hmart",
+  "importedPayee": "HOMEMART #12",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "HomeMart",
+    "store_clues": [
+      "homemart.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 2263.98,
+    "tax": 178.83,
+    "tip": null,
+    "total": 2442.81,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 8.875,
+        "amount": 178.83
+      }
+    ],
+    "items": [
+      {
+        "description": "65IN OLED TV",
+        "amount": 1999.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "electronics"
+      },
+      {
+        "description": "HDMI CABLE",
+        "amount": 14.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "electronics"
+      },
+      {
+        "description": "PROTECTION PLAN",
+        "amount": 249,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "electronics"
+      }
+    ]
+  }
+}

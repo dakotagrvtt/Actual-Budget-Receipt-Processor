@@ -1,0 +1,244 @@
+{
+  "name": "multi-page",
+  "about": "A two-photo back-to-school receipt: 30 lines, the page-2 lines repeat page-1 names.",
+  "payee": "p-hmart",
+  "importedPayee": "HOMEMART #12",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "HomeMart",
+    "store_clues": [
+      "homemart.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 297.95,
+    "tax": 19.37,
+    "tip": null,
+    "total": 317.32,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 6.5,
+        "amount": 19.37
+      }
+    ],
+    "items": [
+      {
+        "description": "NOTEBOOK",
+        "amount": 18.36,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "MARKERS",
+        "amount": 12.34,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "GLUE STICK",
+        "amount": 13.9,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "BINDER",
+        "amount": 17.61,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "FOLDERS 5PK",
+        "amount": 6.95,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "PENCILS",
+        "amount": 7.18,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "ERASERS",
+        "amount": 18.19,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "RULER",
+        "amount": 1.54,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "BACKPACK",
+        "amount": 5.59,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "LUNCHBOX",
+        "amount": 11.9,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "WATER BOTTLE",
+        "amount": 16.53,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "CALCULATOR",
+        "amount": 5,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "INDEX CARDS",
+        "amount": 9.23,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "TAPE",
+        "amount": 14.1,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "SCISSORS",
+        "amount": 4.08,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "NOTEBOOK (P2)",
+        "amount": 12.8,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "MARKERS (P2)",
+        "amount": 2.01,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "GLUE STICK (P2)",
+        "amount": 13.11,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "BINDER (P2)",
+        "amount": 7.6,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "FOLDERS 5PK (P2)",
+        "amount": 2.04,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "PENCILS (P2)",
+        "amount": 15.59,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "ERASERS (P2)",
+        "amount": 15.39,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "RULER (P2)",
+        "amount": 7.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "BACKPACK (P2)",
+        "amount": 1.4,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "LUNCHBOX (P2)",
+        "amount": 9.9,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "WATER BOTTLE (P2)",
+        "amount": 2.55,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "CALCULATOR (P2)",
+        "amount": 10.89,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "INDEX CARDS (P2)",
+        "amount": 12.23,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "TAPE (P2)",
+        "amount": 15.68,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      },
+      {
+        "description": "SCISSORS (P2)",
+        "amount": 6.27,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "school"
+      }
+    ]
+  }
+}

@@ -1,6 +1,7 @@
+// rules.js: evaluating Actual's rules (conditions, stages, ordering) to get a transaction's category and the stores per category.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { setRules, ruleCategoryFor, ruleStoresByCategory } from './rules.js';
+import { setRules, ruleCategoryFor, ruleStoresByCategory, amountRulesFor } from './rules.js';
 
 const payees = [{ id: 'p-target', name: 'Target' }, { id: 'p-shell', name: 'Shell Oil' }];
 const accounts = [{ id: 'acc-on', name: 'Card' }, { id: 'acc-off', name: 'Mortgage', offbudget: true }];
@@ -190,4 +191,41 @@ test('ruleStoresByCategory: takes a payee map, and the last set action of a rule
   const stores = ruleStoresByCategory(new Map([['p-x', 'Corner Store']]));
   assert.deepEqual(stores.get('last'), ['Corner Store']);
   assert.equal(stores.has('first'), false);
+});
+
+const costco = [{ id: 'p-costco', name: 'Costco' }, { id: 'p-hv', name: 'Hy-Vee' }];
+const costcoCats = [{ id: 'cat-groc', name: 'Groceries', group_id: 'g1' }, { id: 'cat-rest', name: 'Restaurants', group_id: 'g1' }];
+const installCostco = (rules) => setRules(rules, { payees: costco, accounts, categories: costcoCats });
+const costcoTxn = (extra = {}) => ({ id: 't2', payee: 'p-costco', account: 'acc-on', amount: -1378, date: '2026-10-26', ...extra });
+
+test('amountRulesFor: pre oneOf + default is + post "amount gte -1100" gives two ranges split at $11.00', () => {
+  installCostco([
+    rule('a', [{ field: 'payee', op: 'oneOf', value: ['p-hv', 'p-costco'] }], [setCat('cat-groc')], { stage: 'pre' }),
+    rule('b', [is('payee', 'p-costco')], [setCat('cat-groc')]),
+    rule('c', [is('payee', 'p-costco'), { field: 'amount', op: 'gte', value: -1100 }], [setCat('cat-rest')], { stage: 'post' }),
+  ]);
+  assert.equal(ruleCategoryFor(costcoTxn()), 'cat-groc');
+  const want = [{ upTo: 11, category: 'cat-rest' }, { over: 11, category: 'cat-groc' }];
+  assert.deepEqual(amountRulesFor(costcoTxn()), want);
+  assert.deepEqual(amountRulesFor(costcoTxn({ amount: -500 })), want); // same answer whatever this charge is
+  assert.deepEqual(amountRulesFor(costcoTxn({ payee: 'p-hv' })), []); // the amount rule is not about this store
+});
+
+test('amountRulesFor: isbetween gives three ranges (edges are inclusive: $10.00 itself is in the middle range)', () => {
+  installCostco([
+    rule('a', [is('payee', 'p-costco')], [setCat('cat-groc')], { stage: 'pre' }),
+    rule('b', [is('payee', 'p-costco'), { field: 'amount', op: 'isbetween', value: { num1: -2000, num2: -1000 } }], [setCat('cat-rest')]),
+  ]);
+  assert.deepEqual(amountRulesFor(costcoTxn()), [
+    { upTo: 9.99, category: 'cat-groc' },
+    { over: 9.99, upTo: 20, category: 'cat-rest' },
+    { over: 20, category: 'cat-groc' },
+  ]);
+});
+
+test('amountRulesFor: outflow option, and a rule with no amount condition gives nothing', () => {
+  installCostco([rule('a', [is('payee', 'p-costco'), { field: 'amount', op: 'gt', value: 5000, options: { outflow: true } }], [setCat('cat-rest')])]);
+  assert.deepEqual(amountRulesFor(costcoTxn()), [{ upTo: 50, category: null }, { over: 50, category: 'cat-rest' }]);
+  installCostco([rule('a', [is('payee', 'p-costco')], [setCat('cat-groc')])]);
+  assert.deepEqual(amountRulesFor(costcoTxn()), []);
 });

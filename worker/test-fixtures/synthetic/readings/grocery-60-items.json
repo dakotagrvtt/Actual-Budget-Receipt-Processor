@@ -1,0 +1,522 @@
+{
+  "name": "grocery-60-items",
+  "about": "A big warehouse-store run: 66 lines incl. duplicates, quantity and weighed lines, three coupons (one tied by item number, one with a number no item has, one plain), food at E 1.5% and general at A 8.6%.",
+  "payee": "p-bulk",
+  "importedPayee": "BULKBARN WHSE 0777",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "BulkBarn Warehouse",
+    "store_clues": [
+      "bulkbarn.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 486.36,
+    "tax": 22.52,
+    "tip": null,
+    "total": 508.88,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "E",
+        "rate": 1.5,
+        "amount": 4.11
+      },
+      {
+        "code": "A",
+        "rate": 8.6,
+        "amount": 18.41
+      }
+    ],
+    "items": [
+      {
+        "description": "7544023 YOGURT CUP",
+        "amount": 9.08,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "1278558 ROMAINE",
+        "amount": 2.6,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "8231133 FROZEN PEAS",
+        "amount": 2.32,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "1017600 PEANUT BUTTER",
+        "amount": 7.71,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "5861560 COFFEE BEANS",
+        "amount": 4.49,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "2479072 OAT MILK",
+        "amount": 5.56,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "5271655 ROMAINE",
+        "amount": 5.51,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "4103091 JAM STRAWB",
+        "amount": 9.52,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "6688839 RICE 5LB",
+        "amount": 3.15,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "4803026 JAM STRAWB",
+        "amount": 5.39,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "3981257 SALSA",
+        "amount": 7.11,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "2466698 CHICKEN THIGH",
+        "amount": 9.17,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "1034842 BUTTER UNSALT",
+        "amount": 1.34,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "4252418 CHICKEN THIGH",
+        "amount": 7.89,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "1620497 CHICKEN THIGH",
+        "amount": 2.44,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "2689482 TORTILLAS",
+        "amount": 5.35,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "1348789 COFFEE BEANS",
+        "amount": 4.58,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "5867940 COFFEE BEANS",
+        "amount": 8.98,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "1266377 BAGELS",
+        "amount": 5.02,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "7892128 APPLES GALA",
+        "amount": 3.72,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "2549340 CEREAL OAT",
+        "amount": 9.56,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "3297259 COFFEE BEANS",
+        "amount": 9.73,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "8790495 GROUND TURKEY",
+        "amount": 4.14,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "2233877 GROUND TURKEY",
+        "amount": 9.34,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "4172177 CEREAL OAT",
+        "amount": 9.86,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "3275350 ROMAINE",
+        "amount": 3.24,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "8278062 FROZEN PEAS",
+        "amount": 7.25,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "8507707 GROUND TURKEY",
+        "amount": 3.63,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "8487875 TORTILLAS",
+        "amount": 6.54,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "6432123 PEANUT BUTTER",
+        "amount": 5.51,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "6439106 GROUND TURKEY",
+        "amount": 2.26,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "4952921 APPLES GALA",
+        "amount": 5.8,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "4442334 RICE 5LB",
+        "amount": 5.55,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "7194723 TOMATO SAUCE",
+        "amount": 2.44,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "6721777 TORTILLAS",
+        "amount": 3.94,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "8055792 CEREAL OAT",
+        "amount": 2.96,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "2967092 CHICKEN THIGH",
+        "amount": 3,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "5078716 COFFEE BEANS",
+        "amount": 6.27,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "6382914 YOGURT CUP",
+        "amount": 1.87,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "3563648 COFFEE BEANS",
+        "amount": 5.15,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "5856649 LAUNDRY DET",
+        "amount": 15.57,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "1714400 SPONGES 3PK",
+        "amount": 12.48,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "1987178 TRASH BAGS",
+        "amount": 3.9,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "2337583 LAUNDRY DET",
+        "amount": 9.31,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "2292275 TRASH BAGS",
+        "amount": 4.9,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "8759966 TRASH BAGS",
+        "amount": 13.88,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "2273553 LAUNDRY DET",
+        "amount": 14.13,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "6215283 AA BATTERIES",
+        "amount": 13.98,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "6669246 FOIL ROLL",
+        "amount": 16.5,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "4439541 SPONGES 3PK",
+        "amount": 8.23,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "6496678 LAUNDRY DET",
+        "amount": 10.63,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "9095974 AA BATTERIES",
+        "amount": 16.62,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "6013966 CHILD SOCKS 3PK",
+        "amount": 13.67,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "kids"
+      },
+      {
+        "description": "5074498 CRAYONS 24CT",
+        "amount": 18.77,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "school"
+      },
+      {
+        "description": "2828755 DOG TREATS",
+        "amount": 3.7,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "pet"
+      },
+      {
+        "description": "5847553 IPA 6PK",
+        "amount": 19.83,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "alcohol"
+      },
+      {
+        "description": "2134417 BDAY CARD",
+        "amount": 3.55,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "gift"
+      },
+      {
+        "description": "4576209 VITAMIN D",
+        "amount": 21.26,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "health"
+      },
+      {
+        "description": "7195449 POTTING SOIL",
+        "amount": 1.82,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "garden"
+      },
+      {
+        "description": "7760953 PUZZLE BOOK",
+        "amount": 12.62,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "media"
+      },
+      {
+        "description": "1017600 PEANUT BUTTER",
+        "amount": 7.71,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "1017600 PEANUT BUTTER",
+        "amount": 7.71,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "2 @ 1.99 LIMES",
+        "amount": 3.98,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "3 @ 0.89 AVOCADO",
+        "amount": 2.67,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "GRAPES 2.37 LB @ 2.49/LB",
+        "amount": 5.9,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "DELI HAM 0.62 LB @ 8.99/LB",
+        "amount": 5.57,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "TPD/2479072",
+        "amount": -0.5,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "TPD/9999999",
+        "amount": -0.75,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "MFR COUPON",
+        "amount": -0.25,
+        "taxable": null,
+        "tax_code": null,
+        "kind": null
+      }
+    ]
+  }
+}

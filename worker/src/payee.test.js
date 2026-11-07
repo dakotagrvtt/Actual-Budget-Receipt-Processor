@@ -1,3 +1,4 @@
+// payee.js: fuzzy merchant/payee matching, store clues and the alias file.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

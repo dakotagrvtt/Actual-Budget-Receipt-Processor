@@ -1,0 +1,47 @@
+{
+  "name": "restaurant-tip-printed",
+  "about": "A restaurant bill with a printed tip line.",
+  "payee": "p-bistro",
+  "importedPayee": "LANTERN BISTRO",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "Lantern Bistro",
+    "store_clues": [],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 35.5,
+    "tax": 2.84,
+    "tip": 7.1,
+    "total": 45.44,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "MUSHROOM RISOTTO",
+        "amount": 22,
+        "taxable": true,
+        "tax_code": null,
+        "kind": "restaurant"
+      },
+      {
+        "description": "KIDS PASTA",
+        "amount": 9,
+        "taxable": true,
+        "tax_code": null,
+        "kind": "restaurant"
+      },
+      {
+        "description": "LEMONADE",
+        "amount": 4.5,
+        "taxable": true,
+        "tax_code": null,
+        "kind": "restaurant"
+      }
+    ]
+  }
+}

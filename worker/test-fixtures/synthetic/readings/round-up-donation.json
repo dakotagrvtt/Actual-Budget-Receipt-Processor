@@ -1,0 +1,55 @@
+{
+  "name": "round-up-donation",
+  "about": "A round-up donation line at the end.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 6.84,
+    "tax": 0.16,
+    "tip": null,
+    "total": 7,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 7,
+        "amount": 0.16
+      }
+    ],
+    "items": [
+      {
+        "description": "CEREAL",
+        "amount": 4.29,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "NAPKINS",
+        "amount": 2.34,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      },
+      {
+        "description": "ROUND UP DONATION",
+        "amount": 0.21,
+        "taxable": false,
+        "tax_code": null,
+        "kind": null
+      }
+    ]
+  }
+}

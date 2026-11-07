@@ -141,23 +141,25 @@ await fs.rm(notes, { force: true });
 const past = [
   { items: 'M&Ms', category: 'Daily Expenses / Child', store: 'Target' },
   { items: 'Whole milk 1 gal', category: 'Daily Expenses / Groceries', store: 'Costco' },
-  { items: 'Gold Bond lotion', category: 'Daily Expenses / Adult 2', store: null },
+  { items: 'Gold Bond lotion', category: 'Daily Expenses / Sam', store: null },
 ];
 const sim = similarItems({ description: "M&M'S" }, past, 8);
 ok("similar: M&M'S finds M&Ms only", sim.length === 1 && sim[0].filed_as === 'Daily Expenses / Child');
 ok('similar: unrelated finds nothing', similarItems({ description: 'WD40 SPRAY' }, past, 8).length === 0);
-ok('similar: words still match', similarItems({ description: 'GOLD BOND HEALING' }, past, 8)[0]?.filed_as === 'Daily Expenses / Adult 2');
+ok('similar: words still match', similarItems({ description: 'GOLD BOND HEALING' }, past, 8)[0]?.filed_as === 'Daily Expenses / Sam');
 await fs.rm(config.keywordsPath, { force: true });
 
 // tags before a comma / paren do not grab the next item
 ok('bare tag before comma', alwaysPhrase('GOLD BOND #always, TIDE PODS', null)?.phrase === 'GOLD BOND');
-ok('bare tag before paren', alwaysPhrase('Gold Bond #always (for Adult 2)', null)?.phrase === 'Gold Bond');
+ok('bare tag before paren', alwaysPhrase('Gold Bond #always (for Sam)', null)?.phrase === 'Gold Bond');
 ok('explicit phrase stops at comma', alwaysPhrase('#always Gold Bond, Tide', null)?.phrase === 'Gold Bond');
 ok('bare tag after separator', alwaysPhrase('Tide, Gold Bond #usually', null)?.phrase === 'Gold Bond');
-ok('stripAnnotations keeps items after tag', stripAnnotations('GOLD BOND #always, TIDE PODS') === 'GOLD BOND, TIDE PODS' && stripAnnotations('Gold Bond #always (for Adult 2)') === 'Gold Bond (for Adult 2)');
+ok('stripAnnotations keeps items after tag', stripAnnotations('GOLD BOND #always, TIDE PODS') === 'GOLD BOND, TIDE PODS' && stripAnnotations('Gold Bond #always (for Sam)') === 'Gold Bond (for Sam)');
 // every tag is harvested (matchAll)
 const two = tagPhrases('Gold Bond #always, Nerds #usually, #always Tide', null);
 ok('all tags found', two.length === 3 && two[0].phrase === 'Gold Bond' && two[1].phrase === 'Nerds' && two[1].strength === 'usually' && two[2].phrase === 'Tide');
+// a worker note in front of the tag (even cut off) is not part of the phrase
+ok('pipeline note before a tag', tagPhrases('MILK (pipeline: 0.37 less than read, from the tax #always', null)[0].phrase === 'MILK' && tagPhrases('MILK (maybe Child 34%) #usually', null)[0].phrase === 'MILK');
 await fs.rm(config.keywordsPath, { force: true });
 await harvestAlways([{ txnId: 't9', date: '2026-01-01', notes: 'Gold Bond #always, Nerds #usually', item: null, category: 'A / One' }]);
 list = await loadKeywords();
@@ -180,6 +182,30 @@ const mt = (await fs.stat(config.keywordsPath)).mtimeMs;
 await harvestAlways([{ txnId: 'c', date: '2026-03-01', notes: '#usually Tide', item: null, category: 'A / One' }]);
 ok('no change, no write', (await fs.stat(config.keywordsPath)).mtimeMs === mt);
 await fs.rm(config.keywordsPath, { force: true });
+// learned keywords with size limits: list shows both, test checks each one and says which stops it
+await fs.writeFile(config.keywordsPath, JSON.stringify({ keywords: [{ phrase: 'coke', category: 'A / One', store: 'Costco', strength: 'usually', from: 'learned', added: '2026-10-01', maxCents: 3000, maxItemCents: 500 }] }));
+ok('cli list shows both limits', /\(charges up to \$30\.00, items up to \$5\.00\)/.test(cli('list')));
+ok('cli test without amounts says what was not checked', /charge limit was not checked \(add --amount/.test(cli('test', 'COKE', '--at', 'Costco')) && /item price limit was not checked \(add --item-amount/.test(cli('test', 'COKE', '--at', 'Costco')));
+const fitting = cli('test', 'COKE', '--at', 'Costco', '--amount', '13.78', '--item-amount', '1.58');
+ok('cli test within both limits has no complaint', !/Not applied|not checked/.test(fitting));
+ok('cli test names the item limit', /Not applied: the item price is over the limit/.test(cli('test', 'COKE', '--at', 'Costco', '--amount', '13.78', '--item-amount', '15.49')) && !/charge is over/.test(cli('test', 'COKE', '--at', 'Costco', '--amount', '13.78', '--item-amount', '15.49')));
+ok('cli test names the charge limit', /Not applied: the charge is over the limit/.test(cli('test', 'COKE', '--at', 'Costco', '--amount', '50', '--item-amount', '1.58')));
+let badItemAmount = false;
+try { cli('test', 'COKE', '--item-amount', 'x'); } catch { badItemAmount = true; }
+ok('cli --item-amount needs a number', badItemAmount);
+const { keywordFits } = await import('./keywords.js');
+ok('keywordFits: both limits, unknown sizes, yours and older keywords', keywordFits({ from: 'learned', maxCents: 3000, maxItemCents: 500 }, 1378, 158) && !keywordFits({ from: 'learned', maxCents: 3000, maxItemCents: 500 }, 1378, 1549) && !keywordFits({ from: 'learned', maxCents: 3000, maxItemCents: 500 }, 5000, 158) && !keywordFits({ from: 'learned', maxItemCents: 500 }, 1378) && keywordFits({ from: 'learned', maxCents: 3000 }, 1378) && keywordFits({ from: 'cli', maxItemCents: 1 }, 1, 99999));
+// the size limits are applied before matching, as in the worker: a keyword over its limit lets a lower one through
+await fs.writeFile(config.keywordsPath, JSON.stringify({ keywords: [
+  { phrase: 'coke zero', category: 'B / Two', store: 'Costco', strength: 'usually', from: 'learned', added: '2026-10-01', maxItemCents: 500 },
+  { phrase: 'coke', category: 'A / One', store: 'Costco', strength: 'usually', from: 'learned', added: '2026-10-01' },
+] }));
+ok('cli test: within the item limit the longer keyword wins', /Match: "coke zero"/.test(cli('test', 'COKE ZERO', '--at', 'Costco', '--item-amount', '1.58')));
+ok('cli test: over the item limit the next keyword applies', /Match: "coke" .*A \/ One/.test(cli('test', 'COKE ZERO', '--at', 'Costco', '--item-amount', '15.49')) && !/Not applied/.test(cli('test', 'COKE ZERO', '--at', 'Costco', '--item-amount', '15.49')));
+ok('cli test: no amount given, the limited keyword is shown and the check is reported', /Match: "coke zero"/.test(cli('test', 'COKE ZERO', '--at', 'Costco')) && /not checked/.test(cli('test', 'COKE ZERO', '--at', 'Costco')));
+await fs.writeFile(config.keywordsPath, JSON.stringify({ keywords: [{ phrase: 'coke zero', category: 'B / Two', store: 'Costco', from: 'learned', added: '2026-10-01', maxItemCents: 500 }] }));
+ok('cli test: the only keyword over its limit says so', /Match: "coke zero"/.test(cli('test', 'COKE ZERO', '--at', 'Costco', '--item-amount', '15.49')) && /Not applied: the item price is over the limit/.test(cli('test', 'COKE ZERO', '--at', 'Costco', '--item-amount', '15.49')));
+await fs.rm(config.keywordsPath, { force: true });
 // KEYWORD_MODE validation
 const modeOf = (v) => execFileSync('node', ['-e', `import(${JSON.stringify(CONFIG_URL)}).then((m) => console.log('MODE=' + m.config.keywordMode))`], { env: { ...process.env, KEYWORD_MODE: v }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 ok('KEYWORD_MODE mixed accepted', modeOf('Mixed').includes('MODE=mixed'));
@@ -192,3 +218,10 @@ ok('KEYWORD_MODE invalid warns once', warned);
 
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
+
+test('normalize: accents and letters without a decomposition become ASCII, other scripts stay words', () => {
+  assert.equal(normalize('Crème Fraîche'), 'creme fraiche');
+  assert.equal(normalize('Øl ÆBLE straße łódź'), 'ol aeble strasse lodz');
+  assert.equal(normalize('Молоко 1л'), 'молоко 1 л');
+  assert.equal(normalize('牛乳'), '牛乳');
+});

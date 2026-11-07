@@ -1,0 +1,42 @@
+{
+  "name": "cash-paid-tendered",
+  "about": "Paid in cash; the reader took the $20 handed over as the total.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 6.25,
+    "tax": 0.5,
+    "tip": null,
+    "total": 20,
+    "payment_method": "cash",
+    "cash_tendered": 20,
+    "card_last4": null,
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "COFFEE",
+        "amount": 3.5,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "restaurant"
+      },
+      {
+        "description": "MUFFIN",
+        "amount": 2.75,
+        "taxable": null,
+        "tax_code": null,
+        "kind": "restaurant"
+      }
+    ]
+  }
+}

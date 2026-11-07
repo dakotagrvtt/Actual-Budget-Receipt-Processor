@@ -1,0 +1,62 @@
+{
+  "_about": "Raw first-pass reader outputs (not schema-constrained), as a vision model might write them for made-up receipts. 'expect' lists fields of the checked reading (dotted paths); 'throws' a pattern for the error that sends the reading to the constrained second pass.",
+  "cases": [
+    {
+      "about": "amounts as strings with $, thousands separators, trailing and bracketed minus",
+      "raw": { "merchant": "HomeMart", "store_clues": ["homemart.example"], "total": "$2,442.81", "subtotal": "2,263.98", "tax": "$178.83", "tip": null, "currency": "USD", "is_return": false,
+        "items": [{ "description": "65IN OLED TV", "amount": "1,999.99", "taxable": "true", "tax_code": "t" }, { "description": "INSTANT SAVINGS", "amount": "50.00-", "taxable": false, "tax_code": null }, { "description": "COUPON", "amount": "(5.00)", "taxable": null, "tax_code": " " }] },
+      "expect": { "total": 2442.81, "subtotal": 2263.98, "tax": 178.83, "items.0.amount": 1999.99, "items.0.taxable": true, "items.0.tax_code": "t", "items.1.amount": -50, "items.2.amount": -5, "items.2.tax_code": null }
+    },
+    {
+      "about": "USD written out, spaces inside the number, a number for card_last4",
+      "raw": { "merchant": "FreshFields Market", "total": "USD 35.01", "subtotal": " 33.91 ", "tax": "1.10 USD", "card_last4": 9999, "items": [{ "description": "MILK", "amount": "3 .49" }] },
+      "expect": { "total": 35.01, "subtotal": 33.91, "tax": 1.1, "card_last4": "9999", "items.0.amount": 3.49 }
+    },
+    {
+      "about": "F-coded food the reader called taxed: not counted as taxed",
+      "raw": { "merchant": "FreshFields Market", "total": 12.82, "items": [{ "description": "CEREAL", "amount": 3.99, "taxable": true, "tax_code": "f" }, { "description": "CLEANER", "amount": 4.99, "taxable": "false", "tax_code": "T" }] },
+      "expect": { "items.0.taxable": null, "items.0.tax_code": "f", "items.1.taxable": false }
+    },
+    {
+      "about": "tax lines: percent strings, string amounts; negative, unreadable and non-object lines dropped",
+      "raw": { "merchant": "BulkBarn Warehouse", "total": 31.08, "tax_lines": [{ "code": "a", "rate": "8.25%", "amount": "0.98" }, { "code": "E", "rate": 0.02, "amount": 0.26 }, { "code": "X", "rate": 5, "amount": -1 }, { "code": "Y", "rate": "n/a", "amount": "?" }, "TAX 1.24", null, { "code": null, "rate": 0, "amount": 1.24 }], "items": [{ "description": "BEEF", "amount": 8.99 }] },
+      "expect": { "tax_lines.length": 3, "tax_lines.0.code": "a", "tax_lines.0.rate": 8.25, "tax_lines.0.amount": 0.98, "tax_lines.1.amount": 0.26, "tax_lines.2.code": null, "tax_lines.2.rate": null }
+    },
+    {
+      "about": "tax lines that are not a list, or an empty list, read as none",
+      "raw": { "merchant": "FreshFields Market", "total": 5, "tax_lines": "TAX 0.35", "items": [{ "description": "MILK", "amount": 5 }] },
+      "expect": { "tax_lines": null }
+    },
+    {
+      "about": "store clues: phone numbers, survey logins and empty strings are dropped; names and domains kept",
+      "raw": { "merchant": "Corner Pharmacy", "total": 4, "store_clues": ["cornerpharmacy.example", "555-0100-2222", "Survey password: x7", "", 42, "Corner Rewards"], "items": [{ "description": "GUM", "amount": 4 }] },
+      "expect": { "store_clues": ["cornerpharmacy.example", "Corner Rewards"] }
+    },
+    {
+      "about": "missing optional fields, blank dates, odd booleans and payment method case",
+      "raw": { "merchant": " Lantern Bistro ", "total": 45.44, "date": "  ", "date_as_printed": "", "payment_method": "  VISA ", "is_return": "yes", "items": [{ "description": "  RISOTTO  ", "amount": 22 }] },
+      "expect": { "date": null, "date_as_printed": null, "subtotal": null, "tax": null, "tip": null, "cash_tendered": null, "payment_method": "visa", "is_return": false, "items.0.description": "RISOTTO", "card_last4": null }
+    },
+    {
+      "about": "a return receipt written as the string true",
+      "raw": { "merchant": "HomeMart", "total": "-26.74", "is_return": "true", "items": [{ "description": "RETURN JACKET", "amount": "-24.99" }] },
+      "expect": { "is_return": true, "total": -26.74 }
+    },
+    {
+      "about": "an optional amount that is not a number reads as not printed",
+      "raw": { "merchant": "Zippy Fuel", "total": 41.07, "subtotal": "see above", "tax": {}, "tip": [], "cash_tendered": true, "items": [{ "description": "UNLEADED", "amount": 41.07 }] },
+      "expect": { "subtotal": null, "tax": null, "tip": null, "cash_tendered": null }
+    },
+    { "about": "no merchant", "raw": { "merchant": "  ", "total": 1, "items": [{ "description": "X", "amount": 1 }] }, "throws": "no merchant" },
+    { "about": "a total that is not a number", "raw": { "merchant": "A", "total": "about ten", "items": [{ "description": "X", "amount": 1 }] }, "throws": "bad total" },
+    { "about": "a NaN total (a model writing NaN)", "raw": { "merchant": "A", "total": "NaN", "items": [{ "description": "X", "amount": 1 }] }, "throws": "bad total" },
+    { "about": "an infinite total", "raw": { "merchant": "A", "total": "Infinity", "items": [{ "description": "X", "amount": 1 }] }, "throws": "bad total" },
+    { "about": "no items", "raw": { "merchant": "A", "total": 1, "items": [] }, "throws": "no line items" },
+    { "about": "items not a list", "raw": { "merchant": "A", "total": 1, "items": { "description": "X", "amount": 1 } }, "throws": "no line items" },
+    { "about": "an item that is a string", "raw": { "merchant": "A", "total": 1, "items": ["MILK 3.49"] }, "throws": "bad item" },
+    { "about": "an item without a description", "raw": { "merchant": "A", "total": 1, "items": [{ "description": " ", "amount": 1 }] }, "throws": "without a description" },
+    { "about": "an item amount that is not a number", "raw": { "merchant": "A", "total": 1, "items": [{ "description": "X", "amount": "free" }] }, "throws": "bad item amount" },
+    { "about": "an item amount of null", "raw": { "merchant": "A", "total": 1, "items": [{ "description": "X", "amount": null }] }, "throws": "bad item amount" },
+    { "about": "not an object at all", "raw": null, "throws": "not an object" }
+  ]
+}

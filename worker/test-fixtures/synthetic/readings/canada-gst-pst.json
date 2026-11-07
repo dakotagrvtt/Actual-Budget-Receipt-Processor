@@ -1,0 +1,72 @@
+{
+  "name": "canada-gst-pst",
+  "about": "A Canadian receipt in CAD: GST 5% and PST 7%; zero-rated groceries, GST-only items (G), both (GP).",
+  "payee": "p-north",
+  "importedPayee": "NORTHLINE GROCERS",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "Northline Grocers",
+    "store_clues": [],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "CAD",
+    "subtotal": 31.55,
+    "tax": 2.25,
+    "tip": null,
+    "total": 33.8,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "GST",
+        "rate": 5,
+        "amount": 1.06
+      },
+      {
+        "code": "PST",
+        "rate": 7,
+        "amount": 1.19
+      }
+    ],
+    "items": [
+      {
+        "description": "2% MILK 4L",
+        "amount": 6.49,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "BREAD WW",
+        "amount": 3.79,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "CHIPS",
+        "amount": 4.29,
+        "taxable": true,
+        "tax_code": "G",
+        "kind": "grocery"
+      },
+      {
+        "description": "DISH TABS",
+        "amount": 12.99,
+        "taxable": true,
+        "tax_code": "GP",
+        "kind": "household"
+      },
+      {
+        "description": "HAND SOAP",
+        "amount": 3.99,
+        "taxable": true,
+        "tax_code": "GP",
+        "kind": "household"
+      }
+    ]
+  }
+}

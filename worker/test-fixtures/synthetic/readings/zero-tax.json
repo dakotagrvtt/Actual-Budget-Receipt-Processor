@@ -1,0 +1,42 @@
+{
+  "name": "zero-tax",
+  "about": "Everything untaxed; the tax line reads 0.00.",
+  "payee": "p-kiosk",
+  "importedPayee": "KIOSK BOOKS 9",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "Kiosk Books",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 12.49,
+    "tax": 0,
+    "tip": null,
+    "total": 12.49,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": null,
+    "items": [
+      {
+        "description": "APPLES",
+        "amount": 4.5,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "grocery"
+      },
+      {
+        "description": "KIDS BOOK",
+        "amount": 7.99,
+        "taxable": false,
+        "tax_code": null,
+        "kind": "media"
+      }
+    ]
+  }
+}

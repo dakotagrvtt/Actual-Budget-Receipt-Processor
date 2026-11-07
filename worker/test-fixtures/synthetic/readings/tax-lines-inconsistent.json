@@ -1,0 +1,53 @@
+{
+  "name": "tax-lines-inconsistent",
+  "about": "The tax lines add up to more than the printed tax.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 8.48,
+    "tax": 0.47,
+    "tip": null,
+    "total": 8.95,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "E",
+        "rate": 2,
+        "amount": 0.07
+      },
+      {
+        "code": "A",
+        "rate": 8,
+        "amount": 1.15
+      }
+    ],
+    "items": [
+      {
+        "description": "MILK",
+        "amount": 3.49,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "SOAP",
+        "amount": 4.99,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      }
+    ]
+  }
+}

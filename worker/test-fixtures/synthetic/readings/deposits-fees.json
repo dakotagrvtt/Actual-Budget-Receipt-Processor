@@ -1,0 +1,83 @@
+{
+  "name": "deposits-fees",
+  "about": "Bottle deposits, a bag fee, an environmental fee and a CRV line next to drinks.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 17.32,
+    "tax": 1.28,
+    "tip": null,
+    "total": 18.6,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "T",
+        "rate": 8,
+        "amount": 1.28
+      }
+    ],
+    "items": [
+      {
+        "description": "SPARKLING WATER 12PK",
+        "amount": 5.99,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "grocery"
+      },
+      {
+        "description": "BOTTLE DEPOSIT",
+        "amount": 0.6,
+        "taxable": false,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "CRV",
+        "amount": 0.6,
+        "taxable": false,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "SODA 2L",
+        "amount": 2.29,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "grocery"
+      },
+      {
+        "description": "BAG FEE",
+        "amount": 0.1,
+        "taxable": false,
+        "tax_code": null,
+        "kind": null
+      },
+      {
+        "description": "ENV FEE",
+        "amount": 0.25,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": null
+      },
+      {
+        "description": "LAMP OIL",
+        "amount": 7.49,
+        "taxable": true,
+        "tax_code": "T",
+        "kind": "household"
+      }
+    ]
+  }
+}

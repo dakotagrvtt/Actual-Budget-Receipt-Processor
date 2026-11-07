@@ -1,3 +1,4 @@
+// readings.js: finding saved reading files and naming new ones.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readingFiles, readingFileName } from './readings.js';

@@ -65,11 +65,75 @@ test('budgetTransactions: stops fetching when the caller stops', async () => {
   assert.deepEqual(asked, ['a1']);
 });
 
-test('findTaggedTransaction: finds the tagged note across accounts and returns early', async () => {
+test('findTaggedTransactions: finds the tagged note across accounts', async () => {
   fakeBudget();
-  const hit = await actual.findTaggedTransaction('a.jpg', '2026-09-01');
+  const [hit] = await actual.findTaggedTransactions('a.jpg', '2026-09-01');
   assert.equal(hit.id, 't5');
   assert.equal(hit.accountName, 'Credit card');
   assert.equal(hit.payeeName, 'Store Two');
-  assert.equal(await actual.findTaggedTransaction('a', '2026-09-01'), null); // "a" is not "a.jpg"
+  assert.deepEqual(await actual.findTaggedTransactions('a', '2026-09-01'), []); // "a" is not "a.jpg"
+});
+
+test('hasTag accepts every note format receipt.js writes, and rejects other files that start with the same name', () => {
+  const name = 'receipt.jpg';
+  const tag = `#receipt ${name}`;
+  for (const review of ['', ' #review']) {
+    const note = `${tag}${review}`;
+    const formats = [
+      note, // split: the tag alone (the parts go in the sub-transactions)
+      `${note} — items: milk; eggs`, // single category: categorize / confirm / note with items
+      `${note}: Groceries $10.00, Home $5.00`, // categorize with several categories, or the note action
+    ];
+    for (const f of formats) {
+      assert.equal(actual.hasTag(f, tag), true, f);
+      assert.equal(actual.hasTag(`Weekly shop | ${f}`, tag), true, `joined after an existing note: ${f}`);
+      assert.equal(actual.hasTag(`${f} | later note`, tag), true, `followed by another note: ${f}`);
+    }
+  }
+  for (const other of ['receipt.jpg2', 'receipt.jpg.bak', 'receipt.jpgx: parts', 'receipt.jpg:parts']) {
+    assert.equal(actual.hasTag(`#receipt ${other}`, tag), false, other);
+  }
+  // an earlier near miss does not hide a real tag later in the note
+  assert.equal(actual.hasTag('#receipt receipt.jpg2 | #receipt receipt.jpg: parts', tag), true);
+});
+
+test('hasTag: a bare space after the file name is not enough, so a name with spaces is not mistaken for its prefix', () => {
+  // "a.jpg scan.jpg" is a file name with a space; its note must not count as the tag of a new "a.jpg"
+  assert.equal(actual.hasTag('#receipt a.jpg scan.jpg', '#receipt a.jpg'), false);
+  assert.equal(actual.hasTag('#receipt a.jpg scan.jpg #review — items: milk', '#receipt a.jpg'), false);
+  assert.equal(actual.hasTag('#receipt a.jpg scan.jpg: Groceries $1.00', '#receipt a.jpg'), false);
+  assert.equal(actual.hasTag('#receipt a.jpg #review.jpg', '#receipt a.jpg'), false);
+  assert.equal(actual.hasTag('#receipt a.jpg  notes', '#receipt a.jpg'), false);
+  // ... and a real name with spaces still matches itself in every format the worker writes
+  const tag = '#receipt a.jpg scan.jpg';
+  for (const f of [tag, `${tag} #review`, `${tag} — items: milk`, `${tag} #review — items: milk`, `${tag}: Groceries $1.00`, `Weekly shop | ${tag} | later`, `${tag} `]) {
+    assert.equal(actual.hasTag(f, tag), true, f);
+  }
+  // the shorter name's own tag still matches, even next to the longer one
+  assert.equal(actual.hasTag('#receipt a.jpg scan.jpg | #receipt a.jpg — items: tea', '#receipt a.jpg'), true);
+});
+
+test('realPayeeNames: transfer payees (your own accounts) are left out; budgetTransactions says which payee is a transfer', async () => {
+  fakeBudget();
+  mock.method(api, 'getPayees', async () => [{ id: 'p1', name: 'Store One' }, { id: 'p2', name: "Alex's Checking", transfer_acct: 'a4' }, { id: 'p3', name: '' }]);
+  assert.deepEqual(await actual.realPayeeNames(), ['Store One']);
+  assert.deepEqual([...(await actual.payeeNames()).values()], ['Store One', "Alex's Checking", '']); // unchanged for everything else
+  const got = await collect(actual.budgetTransactions('2026-10-01', '2026-10-31'));
+  assert.deepEqual(got.map((x) => [x.t.id, x.payeeName, x.payeeIsTransfer]), [['t1', 'Store One', false], ['t2', null, false], ['t5', "Alex's Checking", true]]);
+});
+
+test('itemHistory: each note carries payee (the real Actual payee) next to store (which may be the raw bank text)', async () => {
+  fakeBudget();
+  mock.method(api, 'getPayees', async () => [{ id: 'p1', name: 'Store One' }, { id: 'p2', name: "Alex's Checking", transfer_acct: 'a4' }]);
+  const today = new Date().toISOString().slice(0, 10);
+  mock.method(api, 'getTransactions', async (id) => (id === 'a1'
+    ? [
+        { id: 'h1', date: today, amount: -500, payee: 'p1', category: 'c1', notes: '#receipt x.jpg — items: milk' },
+        { id: 'h2', date: today, amount: -500, payee: 'p2', category: 'c1', notes: '#receipt y.jpg — items: tickets' },
+        { id: 'h3', date: today, amount: -500, payee: 'p9', imported_payee: 'Zelle to Sam Example', category: 'c1', notes: '#receipt z.jpg — items: lunch' },
+      ]
+    : []));
+  const found = await actual.itemHistory('none', new Map([['c1', 'A / One']]));
+  const by = Object.fromEntries(found.map((f) => [f.items, [f.store, f.payee]]));
+  assert.deepEqual(by, { milk: ['Store One', 'Store One'], tickets: ["Alex's Checking", null], lunch: ['Zelle to Sam Example', null] });
 });

@@ -1,0 +1,11 @@
+{
+  "keywords": [
+    { "phrase": "milk", "category": "Food / Dairy & Eggs", "store": null, "strength": "always", "from": "cli" },
+    { "phrase": "unleaded", "category": "Transport / Gas / Fuel", "store": null, "strength": "always", "from": "cli" },
+    { "phrase": "coffee", "category": "Food / Coffee ☕", "store": null, "strength": "usually", "from": "cli" },
+    { "phrase": "comté", "category": "Food / Dairy & Eggs", "store": "Marché Lumière", "strength": "always", "from": "cli" },
+    { "phrase": "lottery", "category": "Fun & Hobbies / Lottery", "store": null, "strength": "always", "from": "cli" },
+    { "phrase": "toy", "category": "Kids › Adult 1's kid / Toys", "store": null, "strength": "usually", "from": "cli" },
+    { "phrase": "misc", "category": "Fun & Hobbies / Misc 🤷", "store": null, "strength": "always", "from": "cli" }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "keywords": [
+    { "phrase": "milk", "category": "Daily Expenses / Groceries", "store": null, "strength": "always", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "gift card", "category": "Fun / Gifts", "store": null, "strength": "always", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "dog", "category": "Daily Expenses / Pets", "store": null, "strength": "usually", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "socks", "category": "Kids / Kid", "store": "HomeMart", "strength": "usually", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "card", "category": "Fun / Gifts", "store": null, "strength": "usually", "added": "2026-01-02", "from": "actual", "fromTxn": "t-old-1" },
+    { "phrase": "batteries", "category": "Daily Expenses / Household Supplies", "store": null, "strength": "usually", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "batteries", "category": "Fun / Entertainment", "store": null, "strength": "always", "added": "2026-01-03", "from": "actual", "fromTxn": "t-old-2" },
+    { "phrase": "internet", "category": "Bills / Internet", "store": null, "strength": "always", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "hobby", "category": "Fun / Old Hobby", "store": null, "strength": "always", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "lemonade", "category": "No Such / Category", "store": null, "strength": "always", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "bag fee", "category": "Daily Expenses / Household Supplies", "store": "FreshFields", "strength": "always", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "deposit", "category": "Daily Expenses / Groceries", "store": null, "strength": "usually", "added": "2026-01-02", "from": "cli" },
+    { "phrase": "chips", "category": "Kids / Kid", "store": null, "strength": "usually", "added": "2026-10-01", "from": "learned", "maxCents": 2000, "maxItemCents": 500 },
+    { "phrase": "tv", "category": "Fun / Entertainment", "store": "HomeMart", "strength": "always", "added": "2026-10-01", "from": "learned", "maxCents": 50000 }
+  ],
+  "removed": [{ "phrase": "eggs", "store": null }]
+}

@@ -1,0 +1,67 @@
+{
+  "name": "us-two-rate-EA",
+  "about": "Food at a reduced rate (E 2%) and general merchandise (A 8.25%), both lines printed.",
+  "payee": "p-fresh",
+  "importedPayee": "FRESHFIELDS MKT #0042",
+  "daysAgo": 2,
+  "chargeCents": null,
+  "reading": {
+    "merchant": "FreshFields Market",
+    "store_clues": [
+      "freshfields.example"
+    ],
+    "date_as_printed": null,
+    "date": null,
+    "currency": "USD",
+    "subtotal": 29.46,
+    "tax": 1.62,
+    "tip": null,
+    "total": 31.08,
+    "payment_method": "card",
+    "cash_tendered": null,
+    "card_last4": "9999",
+    "is_return": false,
+    "tax_lines": [
+      {
+        "code": "E",
+        "rate": 2,
+        "amount": 0.26
+      },
+      {
+        "code": "A",
+        "rate": 8.25,
+        "amount": 1.36
+      }
+    ],
+    "items": [
+      {
+        "description": "GROUND BEEF",
+        "amount": 8.99,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "POTATOES 5LB",
+        "amount": 3.99,
+        "taxable": true,
+        "tax_code": "E",
+        "kind": "grocery"
+      },
+      {
+        "description": "CANDLES",
+        "amount": 9.99,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "household"
+      },
+      {
+        "description": "TOY CAR",
+        "amount": 6.49,
+        "taxable": true,
+        "tax_code": "A",
+        "kind": "kids"
+      }
+    ]
+  }
+}
