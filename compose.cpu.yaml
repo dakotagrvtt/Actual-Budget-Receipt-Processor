@@ -1,0 +1,11 @@
+# No GPU: run both llama.cpp services on the CPU. ./receipts setup picks this file on a machine without a GPU
+# (COMPOSE_FILE=compose.yaml:compose.cpu.yaml in .env) and sets LLM_GPU_LAYERS=0 and DECIDER_GPU_LAYERS=0 there.
+# It only drops the /dev/dri device and GPU groups, which don't exist without a GPU and would stop the containers
+# from starting. Slow, but receipts aren't urgent. Untested by the author (developed on an AMD card).
+x-cpu: &cpu
+  devices: !reset []
+  group_add: !reset []
+
+services:
+  llm: *cpu
+  decider-gguf: *cpu

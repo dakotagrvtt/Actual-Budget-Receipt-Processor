@@ -1,0 +1,14 @@
+# The decider on TypeSafe's hosted Jev instead of this machine (DECIDER_PROVIDER=remote in .env). ./receipts setup adds
+# this file to COMPOSE_FILE when you choose the hosted decider. By hand:
+#   docker compose -f compose.yaml -f compose.remote-decider.yaml up -d llm worker
+# decider-gguf moves into a profile nothing turns on, so it never starts and its GPU memory (about 3 to 7 GB) stays free.
+# Start the services by name (./receipts start does); `docker compose up -d` with no names starts only what has no profile.
+# The worker then waits for the reader only.
+services:
+  decider-gguf:
+    profiles: ["local-decider"]
+
+  worker:
+    depends_on: !override
+      llm:
+        condition: service_healthy

@@ -1,32 +1,149 @@
 #!/usr/bin/env bash
 # Control script for the receipt pipeline. Run ./receipts help for the commands.
 # Everything runs in Docker; once started, the pipeline keeps running on its own and comes back after a reboot.
+#
+# Layout: constants, output and prompts, .env access, dry run / live mode, hosted reader and decider (COMPOSE_FILE overlays),
+# Docker helpers, model downloads, setup questions, the setup steps, then one cmd_* function per command and the dispatcher.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
+# ---- constants ----
+
 SERVICES=(llm decider-gguf worker)
+REMOTE_OVERLAY=compose.remote-decider.yaml
+READER_OVERLAY=compose.remote-reader.yaml # must come after REMOTE_OVERLAY in COMPOSE_FILE (see compose_reader_last)
 # One-off runs (replay, check, describe, item-test, keyword) use their own budget copy, so they never share the worker's.
 ONE_OFF=(docker compose run --rm --no-deps -e ACTUAL_DATA_DIR=/data/actual-cache-tools worker)
 
-# Run one worker script (src/$1 with the remaining arguments) in a throwaway container, and exit with its status.
-one_off() {
-  need_env
-  "${ONE_OFF[@]}" node "src/$1" "${@:2}" 2>&1 | quiet
-  exit "${PIPESTATUS[0]}"
+# The default models. The reader is a vision model, so it also needs a multimodal projector (mmproj) file.
+# The default reader is pinned to one Hugging Face snapshot: a fresh install downloads exactly these files, and
+# compose.yaml's fallback points at the same paths. READER_LOCAL_MODEL / READER_LOCAL_MMPROJ and DECIDER_MODEL in .env override them.
+DEFAULT_READER=unsloth/Qwen3.5-4B-GGUF:Q8_0
+DEFAULT_READER_REVISION=e87f176479d0855a907a41277aca2f8ee7a09523
+DEFAULT_READER_FILE=Qwen3.5-4B-Q8_0.gguf
+DEFAULT_READER_MMPROJ=mmproj-BF16.gguf
+DEFAULT_DECIDER=LiquidAI/d1-2B-GGUF:Q8_0
+
+SMALL_GPU_MIB=10240        # below this much GPU memory setup chooses compose.small-gpu.yaml
+MODEL_DOWNLOAD_MINUTES=120 # how long to wait for a model download before giving up
+STARTUP_WAIT_MINUTES=15    # how long setup waits for a model to load after starting
+HF_API_TIMEOUT=20          # seconds for a Hugging Face or Nextcloud request
+
+YES=0 # setup --yes: take the default answer to every question
+
+# ---- output and prompts ----
+
+say() { printf '%s\n' "$*"; }
+warn() { printf 'Warning: %s\n' "$*" >&2; }
+die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+
+# yn "question" Y|N: ask a yes/no question. Enter (or --yes, or no input) gives the default.
+yn() {
+  local reply=""
+  if [[ $YES == 1 ]]; then [[ "$2" == Y ]]; return; fi
+  read -r -p "$1 [$([[ "$2" == Y ]] && echo Y/n || echo y/N)] " reply || true
+  case "$reply" in
+    [Yy]*) return 0 ;;
+    [Nn]*) return 1 ;;
+    *) [[ "$2" == Y ]] ;;
+  esac
 }
 
-# Hide the Actual API's internal chatter (sync and breadcrumb messages) from what's shown.
-quiet() { grep --line-buffered -v -E 'Breadcrumb|^ *(message|category):|^\}|^Syncing since|^Got messages|^Loaded spreadsheet|^Loading fresh spreadsheet|Container .*(Creating|Created)' || true; }
+# ---- .env ----
 
-# Live only when DRY_RUN is a false word (false/0/no/off, any case), like the worker's bool() in config.js.
-# Unset, empty or unrecognized means dry run: the worker falls back to its default, which is dry run.
-mode() {
-  local value
-  value="$(grep -E '^DRY_RUN=' .env 2>/dev/null | tail -n 1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//' | tr -d "'\" \t\r" | tr '[:upper:]' '[:lower:]')" || true
-  case "$value" in
-    false|0|no|off) echo live ;;
-    *) echo "dry run" ;;
-  esac
+# env_get KEY: the value of KEY in .env as docker compose reads it. Prints nothing if unset; the last line for KEY wins.
+# Accepted like compose does: leading spaces, "export KEY=", "KEY = value", "KEY: value"; a value in single or double
+# quotes (quotes removed, whatever follows the closing quote is ignored); an unquoted value ends at " #" (inline comment);
+# only the ends of an unquoted value are trimmed, inner spaces stay.
+env_get() {
+  awk -v k="$1" -v q="'" '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      sub(/^[ \t]+/, "", line)
+      sub(/^export[ \t]+/, "", line)
+      if (index(line, k) != 1) next
+      rest = substr(line, length(k) + 1)
+      if (rest !~ /^[ \t]*[=:]/) next
+      sub(/^[ \t]*[=:][ \t]*/, "", rest)
+      v = rest; found = 1
+    }
+    END {
+      if (!found) exit
+      c = substr(v, 1, 1)
+      if (c == q) { v = substr(v, 2); i = index(v, q); print (i ? substr(v, 1, i - 1) : v) }
+      else if (c == "\"") {
+        v = substr(v, 2); out = ""
+        for (i = 1; i <= length(v); i++) {
+          ch = substr(v, i, 1)
+          if (ch == "\\") { n = substr(v, i + 1, 1); if (n == "\"" || n == "\\" || n == "$") { out = out n; i++; continue } }
+          if (ch == "\"") break
+          out = out ch
+        }
+        print out
+      } else { sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v); print v }
+    }' .env
+}
+
+# env_set KEY VALUE: put KEY=VALUE in .env (replacing the line, or adding it). The value is passed through the
+# environment, so no character in it (/ & | \ ...) can break the edit.
+# Quoting follows docker compose's .env rules: single quotes keep everything literal; a value that contains a
+# single quote goes in double quotes, with \ " and $ escaped.
+env_set() {
+  local key="$1" val="$2" bs='\' quoted tmp
+  [[ "$val" != *$'\n'* ]] || die "$key can't contain a line break."
+  if [[ "$val" == *"'"* ]]; then
+    val="${val//"$bs"/"$bs$bs"}"; val="${val//\"/"$bs\""}"; val="${val//\$/"$bs\$"}"
+    quoted="\"$val\""
+  else
+    quoted="'$val'"
+  fi
+  tmp="$(umask 077; mktemp .env.XXXXXX)"
+  KEY="$key" LINE="$key=$quoted" awk '
+    index($0, ENVIRON["KEY"] "=") == 1 { if (!done) print ENVIRON["LINE"]; done = 1; next }
+    { print }
+    END { if (!done) print ENVIRON["LINE"] }' .env > "$tmp"
+  mv "$tmp" .env
+  chmod 600 .env
+}
+
+# env_unset KEY: remove KEY's line from .env (the value then falls back to the default in compose.yaml).
+env_unset() {
+  local tmp
+  tmp="$(umask 077; mktemp .env.XXXXXX)"
+  KEY="$1" awk 'index($0, ENVIRON["KEY"] "=") != 1 { print }' .env > "$tmp"
+  mv "$tmp" .env
+  chmod 600 .env
+}
+
+# env_lower KEY: the value of KEY in .env, in lower case.
+env_lower() { env_get "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# A value counts as missing when it's empty or still the example placeholder.
+env_missing() { local v; v="$(env_get "$1")"; [[ -z "$v" || "$v" == *example.lan* ]]; }
+
+# ask_value KEY "hint" [secret] [optional]
+ask_value() {
+  local key="$1" hint="$2" secret="${3:-}" optional="${4:-}" v=""
+  while true; do
+    say "$key: $hint"
+    if [[ -n "$secret" ]]; then read -rs -p "  $key: " v || v=""; echo; else read -r -p "  $key: " v || v=""; fi
+    if [[ -n "$v" ]]; then env_set "$key" "$v"; ASKED=1; return; fi
+    [[ -n "$optional" ]] && return
+    # Closed input (or --yes with nothing to read) can't be answered: stop instead of looping.
+    [[ -t 0 ]] || die "$key is needed. Put it in .env and run ./receipts setup again."
+    say "  This one is needed."
+  done
+}
+
+ensure_env() {
+  if [[ ! -f .env ]]; then
+    [[ -f .env.example ]] || die ".env.example is missing; run this from the project folder."
+    cp .env.example .env
+    chmod 600 .env
+    say "Created .env from .env.example."
+    NEW_ENV=1
+  fi
 }
 
 need_env() {
@@ -35,133 +152,1128 @@ need_env() {
     exit 1
   fi
   [[ "$(stat -c %a .env)" == 600 ]] || { chmod 600 .env; echo "(set .env to private, chmod 600)"; }
-  mkdir -p data models
+  # data holds receipts' readings, the learned data and the state: private (the worker repairs older ones at start). models is left alone.
+  mkdir -p -m 700 data
+  chmod 700 data 2>/dev/null || true
+  mkdir -p models
   # Settings added after .env was created: append them with their defaults.
-  grep -q '^TRIGGER_TOKEN=' .env || printf '\n# web page / webhook to check the inbox on demand (./receipts trigger-url)\nTRIGGER_TOKEN=\nTRIGGER_BIND=127.0.0.1\nTRIGGER_TIMEZONE=UTC\n' >> .env
+  grep -q '^TRIGGER_TOKEN=' .env || printf '\n# web page / webhook to check the inbox on demand (./receipts trigger-url)\nTRIGGER_TOKEN=\nTRIGGER_BIND=127.0.0.1\n' >> .env
+  # The time zone for the status page: this computer's, unless .env already has one.
+  [[ -n "$(env_get TRIGGER_TIMEZONE)" ]] || env_set TRIGGER_TIMEZONE "$(host_timezone)"
   if grep -qE '^TRIGGER_TOKEN=$' .env; then
-    sed -i "s/^TRIGGER_TOKEN=$/TRIGGER_TOKEN=$(openssl rand -hex 20)/" .env
+    env_set TRIGGER_TOKEN "$(openssl rand -hex 20)" # through the environment, so the token never shows in a process list
     echo "(generated TRIGGER_TOKEN for the trigger page)"
   fi
 }
 
+# host_timezone: this computer's time zone name (timedatectl, else /etc/timezone, else the /etc/localtime link), else UTC.
+# ETC_DIR is only for tests.
+host_timezone() {
+  local etc="${ETC_DIR:-/etc}" tz="" link
+  if command -v timedatectl >/dev/null 2>&1; then tz="$(timedatectl show -p Timezone --value 2>/dev/null | head -n 1 || true)"; fi
+  if ! valid_timezone "$tz" && [[ -r "$etc/timezone" ]]; then tz="$(head -n 1 "$etc/timezone" | tr -d '[:space:]')"; fi
+  if ! valid_timezone "$tz" && [[ -L "$etc/localtime" ]]; then
+    link="$(readlink "$etc/localtime")"
+    tz="${link#*/zoneinfo/}"; [[ "$tz" != "$link" ]] || tz=""
+  fi
+  valid_timezone "$tz" && echo "$tz" || echo UTC
+}
+valid_timezone() { [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$ && "$1" != n/a ]]; }
+
+# ---- dry run and live mode ----
+# The mode in force, by the same rules as the worker (worker/src/settings.js):
+#  - no data/settings.json: DRY_RUN from .env (live only for a false word: false/0/no/off, any case; anything else is dry run);
+#  - data/settings.json usable (a JSON object with "dryRun": true or false): it is THE switch, DRY_RUN in .env is ignored;
+#  - data/settings.json exists but is unusable (bad JSON, wrong type, a directory, unreadable, a dangling symlink): dry run.
+# Anything unclear counts as dry run.
+
+# env_dry: true or false, the DRY_RUN in .env the way the worker reads it (only the ends of the value are trimmed).
+env_dry() {
+  local v
+  v="$(env_get DRY_RUN 2>/dev/null)" || v=""
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; v="${v,,}"
+  case "$v" in false|0|no|off) echo false ;; *) echo true ;; esac
+}
+
+# settings_read: "missing" (no file), "bad" (exists but unusable), "dry" or "live" (what a usable file says).
+settings_read() {
+  local f=data/settings.json err
+  # stat does not follow a symlink here, so a dangling one exists (and is bad); only "No such file" is missing.
+  if ! err="$(LC_ALL=C stat -c %F -- "$f" 2>&1 >/dev/null)"; then
+    [[ "$err" == *"No such file or directory"* ]] && echo missing || echo bad
+    return
+  fi
+  if [[ ! -f "$f" || ! -r "$f" ]]; then echo bad; return; fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -I -c '
+import json, sys
+def refuse(c): raise ValueError(c)  # NaN and Infinity are not JSON (the worker rejects them too)
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"), parse_constant=refuse)
+    assert isinstance(d, dict) and isinstance(d.get("dryRun"), bool)
+    print("dry" if d["dryRun"] else "live")
+except Exception:
+    print("bad")' "$f" 2>/dev/null || echo bad
+    return
+  fi
+  # No python3: accept only the exact shape this script and the worker write (dryRun first, then optional envDryRun,
+  # changedAt, changedBy; plain printable ASCII strings without escapes), else "bad".
+  local LC_ALL=C text ws=$' \t\r\n' str='"[^"[:cntrl:]]*"'
+  local re="^[$ws]*\\{[$ws]*\"dryRun\"[$ws]*:[$ws]*(true|false)[$ws]*(,[$ws]*\"envDryRun\"[$ws]*:[$ws]*(true|false|null)[$ws]*)?(,[$ws]*\"changedAt\"[$ws]*:[$ws]*$str[$ws]*)?(,[$ws]*\"changedBy\"[$ws]*:[$ws]*$str[$ws]*)?\\}[$ws]*\$"
+  tr -d '\0' < "$f" 2>/dev/null | cmp -s - "$f" || { echo bad; return; } # a NUL byte
+  text="$(cat -- "$f" 2>/dev/null)" || { echo bad; return; }
+  [[ "$text" != *\\* && ! "$text" =~ [^[:print:]$ws] ]] || { echo bad; return; }
+  if [[ "$text" =~ $re ]]; then
+    [[ "${BASH_REMATCH[1]}" == true ]] && echo dry || echo live
+  else
+    echo bad
+  fi
+}
+
+# mode_info: "<dry run|live>|<why>"
+mode_info() {
+  local st envd
+  st="$(settings_read)"; envd="$(env_dry)"
+  case "$st" in
+    missing) echo "$([[ "$envd" == true ]] && echo 'dry run' || echo live)|from DRY_RUN in .env; no data/settings.json yet" ;;
+    bad) echo "dry run|data/settings.json can't be read or is damaged, so it stays in dry run until you run ./receipts mode dry|live or delete the file" ;;
+    *) echo "$([[ "$st" == dry ]] && echo 'dry run' || echo live)|from data/settings.json (status page or ./receipts mode)" ;;
+  esac
+}
+mode() { local i; i="$(mode_info)"; echo "${i%%|*}"; }
+
+# mode_note: one line when a usable data/settings.json says something else than DRY_RUN in .env (which is then ignored). Same words as the worker's.
+mode_note() {
+  local st envd
+  st="$(settings_read)"; envd="$(env_dry)"
+  [[ "$st" == dry || "$st" == live ]] || return 0
+  [[ "$([[ "$st" == dry ]] && echo true || echo false)" != "$envd" ]] || return 0
+  if [[ "$st" == dry ]]; then
+    echo "DRY_RUN in .env ($envd) is ignored; the switch on the status page (data/settings.json) says dry run. Use the page or ./receipts mode live to go live."
+  else
+    echo "DRY_RUN in .env ($envd) is ignored; the switch on the status page (data/settings.json) says live. Use the page or ./receipts mode dry to stop."
+  fi
+}
+
+# set_mode true|false: write data/settings.json (the worker re-reads it at the start of every check, no restart needed).
+# Once it exists it is the switch and DRY_RUN in .env is ignored; .env itself is not touched.
+# The file is written to a temp file and renamed, so it is never half-written.
+set_mode() {
+  local tmp
+  mkdir -p -m 700 data
+  tmp="$(mktemp data/.settings.json.XXXXXX)"
+  printf '{\n  "dryRun": %s,\n  "changedAt": "%s",\n  "changedBy": "cli"\n}\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" data/settings.json
+}
+
+# The current mode in a few words for prompts.
+mode_blurb() {
+  if [[ "$(mode)" == live ]]; then echo "live mode: it writes to Actual and moves files"; else echo "dry run: it changes nothing"; fi
+}
+
+# ---- hosted reader and decider: which services run, and the COMPOSE_FILE overlays that go with them ----
+
+# remote_decider: true when .env has DECIDER_PROVIDER=remote (the decider runs on TypeSafe's hosted Jev, not on this machine).
+remote_decider() { [[ -f .env && "$(env_lower DECIDER_PROVIDER)" == remote ]]; }
+# remote_reader: true when .env has READER_PROVIDER=remote (a cloud vision model reads the photos, so there is no llm service).
+remote_reader() { [[ -f .env && "$(env_lower READER_PROVIDER)" == remote ]]; }
+
+# pick_services: the services start/stop work on. A hosted decider has no decider-gguf (naming it would start it), a cloud
+# reader has no llm. Both hosted: the worker only.
+pick_services() {
+  SERVICES=()
+  remote_reader || SERVICES+=(llm)
+  remote_decider || SERVICES+=(decider-gguf)
+  SERVICES+=(worker)
+}
+# wait_for: the containers to wait for before the worker is healthy.
+wait_for() {
+  WAIT_FOR=()
+  remote_reader || WAIT_FOR+=(receipt-llm)
+  remote_decider || WAIT_FOR+=(receipt-decider-gguf)
+  return 0
+}
+
+# compose_without FILE LIST: the ':'-separated COMPOSE_FILE LIST without FILE.
+compose_without() { local s=":$2:"; s="${s//:$1:/:}"; s="${s#:}"; s="${s%:}"; echo "$s"; }
+
+# base_compose LIST: COMPOSE_FILE LIST without the hosted-decider and cloud-reader files, which setup chooses separately.
+base_compose() { compose_without "$READER_OVERLAY" "$(compose_without "$REMOTE_OVERLAY" "$1")"; }
+
+# compose_set LIST: write COMPOSE_FILE. The default (just compose.yaml, or nothing) is stored as no line at all.
+compose_set() {
+  if [[ -z "$1" || "$1" == compose.yaml ]]; then env_unset COMPOSE_FILE; else env_set COMPOSE_FILE "$1"; fi
+}
+
+# compose_add FILE / compose_remove FILE: put FILE in COMPOSE_FILE, or take it out (other entries stay).
+compose_add() {
+  local current; current="$(env_get COMPOSE_FILE)"; current="${current:-compose.yaml}"
+  [[ ":$current:" == *":$1:"* ]] || { env_set COMPOSE_FILE "$current:$1"; say "Set COMPOSE_FILE=$current:$1"; }
+}
+compose_remove() {
+  local current; current="$(env_get COMPOSE_FILE)"
+  [[ ":$current:" == *":$1:"* ]] || return 0
+  compose_set "$(compose_without "$1" "$current")"
+}
+
+# The cloud-reader overlay goes last in COMPOSE_FILE: after the hosted-decider overlay, which replaces the worker's
+# dependencies, so that with both hosted the worker waits for nothing.
+compose_reader_last() {
+  local current; current="$(env_get COMPOSE_FILE)"; current="${current:-compose.yaml}"
+  [[ ":$current:" == *":$READER_OVERLAY:"* ]] || return 0
+  current="$(compose_without "$READER_OVERLAY" "$current")"
+  env_set COMPOSE_FILE "${current:-compose.yaml}:$READER_OVERLAY"
+}
+
+# sync_reader_overlay: make COMPOSE_FILE agree with READER_PROVIDER (the cloud-reader file in it exactly when the reader is
+# remote, and last). Prints one line when it changed something.
+sync_reader_overlay() {
+  local before after; before="$(env_get COMPOSE_FILE)"
+  if remote_reader; then
+    compose_add "$READER_OVERLAY" >/dev/null
+    compose_reader_last
+  else
+    compose_remove "$READER_OVERLAY"
+  fi
+  after="$(env_get COMPOSE_FILE)"
+  [[ "$before" == "$after" ]] && return 0
+  if remote_reader; then say "READER_PROVIDER=remote: put $READER_OVERLAY in COMPOSE_FILE (now ${after:-compose.yaml})."
+  else say "READER_PROVIDER is not remote: took $READER_OVERLAY out of COMPOSE_FILE (now ${after:-compose.yaml})."; fi
+}
+
+# sync_decider_overlay: the same for the hosted-decider file and DECIDER_PROVIDER (in COMPOSE_FILE exactly when the decider is
+# remote). The cloud-reader file stays last. Prints one line when it changed something.
+sync_decider_overlay() {
+  local before after; before="$(env_get COMPOSE_FILE)"
+  if remote_decider; then
+    compose_add "$REMOTE_OVERLAY" >/dev/null
+  else
+    compose_remove "$REMOTE_OVERLAY"
+  fi
+  compose_reader_last
+  after="$(env_get COMPOSE_FILE)"
+  [[ "$before" == "$after" ]] && return 0
+  if remote_decider; then say "DECIDER_PROVIDER=remote: put $REMOTE_OVERLAY in COMPOSE_FILE (now ${after:-compose.yaml})."
+  else say "DECIDER_PROVIDER is not remote: took $REMOTE_OVERLAY out of COMPOSE_FILE (now ${after:-compose.yaml})."; fi
+}
+
+# With the hosted decider and a cloud reader at once, the decider's name and place check would send the raw receipt text to the
+# reader's provider. The worker refuses that unless CLOUD_NAME_SCAN=true. Explain it and ask; true (0) when it is accepted.
+cloud_scan_accepted() { case "$(env_get CLOUD_NAME_SCAN | tr '[:upper:]' '[:lower:]')" in true|1|yes|on) return 0 ;; *) return 1 ;; esac; }
+cloud_scan_optin() {
+  say "The hosted decider and the cloud reader together: the hosted decider's anonymizing starts with a name and place check that the"
+  say "reader runs. With a cloud reader, that check sends the raw receipt text (item lines, store names, amounts) to the reader's provider"
+  say "BEFORE anonymizing. The worker refuses to start with both hosted unless you accept that with CLOUD_NAME_SCAN=true."
+  cloud_scan_accepted && return 0
+  yn "Accept that, and set CLOUD_NAME_SCAN=true?" N || return 1
+  env_set CLOUD_NAME_SCAN true
+}
+
+# prepare_hosting: what start, restart and update all do before touching Docker. COMPOSE_FILE must agree with DECIDER_PROVIDER and
+# READER_PROVIDER, and the hosted decider with a cloud reader needs CLOUD_NAME_SCAN=true (else the worker would refuse to start).
+prepare_hosting() {
+  sync_decider_overlay # a hand-edited DECIDER_PROVIDER, READER_PROVIDER or COMPOSE_FILE that disagree
+  sync_reader_overlay
+  if remote_reader && remote_decider && ! cloud_scan_accepted; then
+    die "READER_PROVIDER=remote and DECIDER_PROVIDER=remote together send the raw receipt text to the reader's provider for the name and place check. Set CLOUD_NAME_SCAN=true in .env to accept that, or switch one of them to local (./receipts setup)."
+  fi
+}
+
+# ---- Docker helpers ----
+
+health() { docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || echo "not created"; }
+
+# How many times Docker has restarted a container.
+restarts() { docker inspect -f '{{.RestartCount}}' "$1" 2>/dev/null || echo 0; }
+
+# Wait until a container reports healthy. $1 = container, $2 = minutes to wait.
+# Returns 0 healthy, 1 stopped, 2 timed out, 3 stuck restarting (shows its last log lines).
+wait_healthy() {
+  local c="$1" limit=$(( $2 * 60 )) waited=0 state line start_restarts n
+  start_restarts="$(restarts "$c")"
+  while true; do
+    state="$(health "$c")"
+    [[ "$state" == healthy ]] && { echo; return 0; }
+    if [[ "$state" == exited || "$state" == dead || "$state" == "not created" ]]; then echo; return 1; fi
+    n="$(restarts "$c")"
+    if [[ "$state" == restarting ]] || (( n - start_restarts >= 2 )); then
+      echo
+      warn "$c keeps restarting. Its last log lines:"
+      docker logs --tail 15 "$c" 2>&1 | tr '\r' '\n' | tail -n 15 | sed 's/^/    /' >&2 || true
+      return 3
+    fi
+    if (( waited >= limit )); then echo; return 2; fi
+    line="$(docker logs --tail 3 "$c" 2>&1 | tr '\r' '\n' | tail -1 | cut -c1-70)" || line=""
+    printf '\r\033[K  %s: %s, %dm%02ds  %s' "$c" "$state" $((waited / 60)) $((waited % 60)) "$line"
+    sleep 5; waited=$((waited + 5))
+  done
+}
+
+# Hide the Actual API's internal chatter (sync and breadcrumb messages) from what's shown.
+quiet() { grep --line-buffered -v -E 'Breadcrumb|^ *(message|category):|^\}|^Syncing since|^Got messages|^Loaded spreadsheet|^Loading fresh spreadsheet|Container .*(Creating|Created)' || true; }
+
+# Run one worker script (src/$1 with the remaining arguments) in a throwaway container, and exit with its status.
+one_off() {
+  need_env
+  "${ONE_OFF[@]}" node "src/$1" "${@:2}" 2>&1 | quiet
+  exit "${PIPESTATUS[0]}"
+}
+
+# restore_llama_offline SERVICE LABEL PRESENT_FN: put a llama.cpp service back the normal way (offline) after an online fetch.
+# If the model never arrived it can't start offline, so it is stopped instead of crash-looping.
+restore_llama_offline() {
+  trap - EXIT INT TERM
+  say "Putting the $2 back offline, the normal way."
+  export_model_env
+  docker compose up -d --force-recreate "$1" >/dev/null 2>&1 || warn "Couldn't recreate the $2; run: docker compose up -d --force-recreate $1"
+  if ! "$3"; then
+    docker compose stop "$1" >/dev/null 2>&1 || true
+    say "The $2 model isn't downloaded yet, so it is stopped. Run ./receipts download-models to try again."
+  fi
+}
+
+# fetch_llama_model SERVICE CONTAINER LABEL PRESENT_FN [VAR=value ...]: start the service once with internet access (the VAR=value
+# settings turn off its --offline), so llama.cpp downloads the model; wait until it has loaded, then put it back offline.
+# However this ends (done, an error, Ctrl-C), the service must not be left with internet access.
+fetch_llama_model() {
+  local service="$1" container="$2" label="$3" present="$4" rc=0; shift 4
+  [[ "$DOCKER_OK" == 1 ]] || die "Docker isn't usable, so the $label can't be fetched. Fix that and run ./receipts download-models."
+  say "Fetching the $label: starting it once with internet access (it normally runs offline)."
+  trap "restore_llama_offline $service $label $present" EXIT
+  trap "restore_llama_offline $service $label $present; exit 130" INT
+  trap "restore_llama_offline $service $label $present; exit 143" TERM
+  env "$@" docker compose up -d "$service"
+  say "Waiting for it to download and load (up to $((MODEL_DOWNLOAD_MINUTES / 60)) hours; Ctrl-C is safe, run this command again later to continue)."
+  wait_healthy "$container" "$MODEL_DOWNLOAD_MINUTES" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) die "The $label stopped. See: docker logs $container" ;;
+    3) die "The $label keeps restarting (see its log lines above, or: docker logs $container)." ;;
+    *) die "Timed out waiting for the $label. See: docker logs $container" ;;
+  esac
+}
+
+# ---- models: the reader and the decider are both llama.cpp services that load a Hugging Face model ----
+# llama.cpp's cache in ./models: models--<org>--<repo>/snapshots/<rev>/<file>.gguf (inside the containers: /models/...).
+
+# model_setting VAR DEFAULT: the value of VAR from the environment, else .env, else DEFAULT.
+model_setting() {
+  local v="${!1:-}"
+  [[ -n "$v" ]] || v="$(env_get "$1")"
+  echo "${v:-$2}"
+}
+
+# model_file REPO:QUANT: the downloaded model file (not a projector), or nothing. Without a quant, any file of the repo.
+model_file() {
+  local repo="${1%%:*}" quant=""
+  [[ "$1" == *:* ]] && quant="${1#*:}"
+  { find -L "models/models--${repo//\//--}/snapshots" -type f -iname "*${quant}*.gguf" ! -iname '*mmproj*' 2>/dev/null || true; } | sort | head -n 1
+}
+
+# pick_mmproj [WANT]: from projector file names or paths on stdin, print the one to use. WANT (a file name or a quant such as
+# F16, case-insensitive) picks the first name containing it. Without WANT: BF16, then F16, then F32, then the first by name.
+pick_mmproj() {
+  local want="${1:-}" names pref hit
+  names="$(awk -F/ 'tolower($NF) ~ /mmproj/ && tolower($NF) ~ /\.gguf$/' | sort)"
+  [[ -n "$names" ]] || return 0
+  if [[ -n "$want" ]]; then
+    awk -F/ -v w="$(tr '[:upper:]' '[:lower:]' <<<"$want")" 'index(tolower($NF), w) { print; exit }' <<<"$names"
+    return 0
+  fi
+  for pref in bf16 f16 f32; do
+    hit="$(awk -F/ -v w="$pref" 'index(tolower($NF), w) { print; exit }' <<<"$names")"
+    [[ -z "$hit" ]] || { echo "$hit"; return 0; }
+  done
+  head -n 1 <<<"$names"
+}
+
+# mmproj_file REPO [WANT]: the downloaded projector of a repo (see pick_mmproj), or nothing.
+mmproj_file() {
+  { find -L "models/models--${1//\//--}/snapshots" -type f -iname '*mmproj*.gguf' 2>/dev/null || true; } | pick_mmproj "${2:-}"
+}
+
+# repo_listing REPO: the file names in a Hugging Face repo, one per line; fails when the list can't be fetched (offline, private repo).
+repo_listing() {
+  curl -fsS --max-time "$HF_API_TIMEOUT" "https://huggingface.co/api/models/$1" 2>/dev/null | grep -o '"rfilename":"[^"]*"' | sed 's/^"rfilename":"//; s/"$//'
+}
+
+# model_present REPO:QUANT: is the model file in ./models?
+model_present() { [[ -n "$(model_file "$1")" ]]; }
+
+decider_model() { model_setting DECIDER_MODEL "$DEFAULT_DECIDER"; }
+decider_present() { model_present "$(decider_model)"; }
+
+# The reader: READER_LOCAL_MODEL, or the pinned default (see the constants) when it is unset or empty.
+reader_is_default() { [[ -z "$(model_setting READER_LOCAL_MODEL "")" ]]; }
+reader_model() { model_setting READER_LOCAL_MODEL "$DEFAULT_READER"; }
+# The default's snapshot folder in ./models. Only it is looked at for the default reader, so a newer snapshot never shadows the pin.
+reader_pinned_dir() { local repo="${DEFAULT_READER%%:*}"; echo "models/models--${repo//\//--}/snapshots/$DEFAULT_READER_REVISION"; }
+# The projector is READER_LOCAL_MMPROJ; for the default model that is the BF16 file, for any other model empty
+# (the best projector the repo has, see pick_mmproj).
+reader_mmproj_want() {
+  if reader_is_default; then model_setting READER_LOCAL_MMPROJ "$DEFAULT_READER_MMPROJ"
+  else model_setting READER_LOCAL_MMPROJ ""; fi
+}
+# The downloaded model and projector files (relative paths), or nothing.
+reader_main_file() {
+  local f
+  if reader_is_default; then
+    f="$(reader_pinned_dir)/$DEFAULT_READER_FILE"
+    if [[ -f "$f" ]]; then echo "$f"; fi
+  else
+    model_file "$(reader_model)"
+  fi
+}
+reader_mmproj_file() {
+  local f m
+  if reader_is_default; then
+    f="$(reader_pinned_dir)/$DEFAULT_READER_MMPROJ"
+    if [[ -f "$f" ]]; then echo "$f"; fi
+  else
+    m="$(reader_model)"; mmproj_file "${m%%:*}" "$(reader_mmproj_want)"
+  fi
+}
+reader_present() { [[ -n "$(reader_main_file)" && -n "$(reader_mmproj_file)" ]]; }
+
+# reader_model_args [fetch]: the llama.cpp flags for the llm service.
+#  - The default reader always gets its pinned files by path, the same as compose.yaml's fallback (download_models fetches them).
+#  - Another model that is downloaded: its files by path (offline, nothing is re-resolved; an existing install keeps its files).
+#  - Otherwise, or when asked to fetch: -hf, which downloads the model; with a projector chosen by name, llama.cpp's own pick
+#    is turned off (--no-mmproj) and that file is fetched by fetch_mmproj_by_name.
+reader_model_args() {
+  local model main proj dir
+  if reader_is_default; then
+    dir="$(reader_pinned_dir)"; dir="/models/${dir#models/}"
+    echo "-m $dir/$DEFAULT_READER_FILE --mmproj $dir/$DEFAULT_READER_MMPROJ"
+    return
+  fi
+  model="$(reader_model)"; main="$(reader_main_file)"; proj="$(reader_mmproj_file)"
+  if [[ "${1:-}" != fetch && -n "$main" && -n "$proj" ]]; then echo "-m /models/${main#models/} --mmproj /models/${proj#models/}"
+  elif [[ "${1:-}" == fetch && -n "$(reader_mmproj_want)" ]]; then echo "-hf $model --no-mmproj"
+  else echo "-hf $model"; fi
+}
+
+# export_model_env: hand the reader's flags to docker compose (compose.yaml falls back to the default files without them).
+# Models given by -hf run with --offline, like the decider; the fetch passes READER_OFFLINE= (empty) to allow the download.
+export_model_env() {
+  [[ -f .env ]] || return 0
+  READER_MODEL_ARGS="$(reader_model_args)"; export READER_MODEL_ARGS
+  if [[ "$READER_MODEL_ARGS" == -hf* ]]; then READER_OFFLINE=--offline; else READER_OFFLINE=; fi
+  export READER_OFFLINE
+}
+
+# reader_name: what the reader model is, for status.
+reader_name() {
+  local main proj
+  main="$(reader_main_file)"; proj="$(reader_mmproj_file)"
+  [[ -z "$main" ]] && main="model file not downloaded" || main="${main##*/}"
+  [[ -z "$proj" ]] && proj="missing" || proj="${proj##*/}"
+  echo "$(reader_model) ($main, projector $proj)"
+}
+
+# download_file URL DEST: download to DEST.part (resuming a partial file), then move it into place.
+download_file() {
+  local url="$1" dest="$2"
+  say "Downloading ${dest##*/} ..."
+  curl -fL --retry 3 -C - -o "$dest.part" "$url" || die "Download of ${dest##*/} failed. Run ./receipts download-models to resume."
+  mv "$dest.part" "$dest"
+}
+
+# fetch_pinned_reader: the default reader's model and projector, from the pinned revision, into the pinned snapshot folder
+# (the layout llama.cpp's cache uses, so the start path and compose.yaml's fallback find them). Files already there are kept.
+fetch_pinned_reader() {
+  local repo="${DEFAULT_READER%%:*}" dir file
+  dir="$(reader_pinned_dir)"
+  mkdir -p "$dir"
+  for file in "$DEFAULT_READER_FILE" "$DEFAULT_READER_MMPROJ"; do
+    if [[ ! -f "$dir/$file" ]]; then download_file "https://huggingface.co/$repo/resolve/$DEFAULT_READER_REVISION/$file" "$dir/$file"; fi
+  done
+}
+
+# fetch_mmproj_by_name: the reader's projector when one is chosen with READER_LOCAL_MMPROJ (a file name or a quant): download it
+# next to the model file. The repo's file list decides which file the name means.
+fetch_mmproj_by_name() {
+  local model repo want name dir
+  model="$(reader_model)"; repo="${model%%:*}"; want="$(reader_mmproj_want)"
+  [[ -n "$want" && -z "$(reader_mmproj_file)" ]] || return 0
+  dir="$(dirname "$(reader_main_file)")"
+  name="$(repo_listing "$repo")" || die "Couldn't read the file list of $repo from Hugging Face (needed to find the projector '$want'). Check the connection and run ./receipts download-models again."
+  name="$(pick_mmproj "$want" <<<"$name")"
+  [[ -n "$name" ]] || die "$repo has no projector (mmproj) file matching '$want', so it can't read images with that setting."
+  download_file "https://huggingface.co/$repo/resolve/main/$name" "$dir/${name##*/}"
+}
+
+# reader_precheck: before a big download, ask Hugging Face whether the reader's repo has a projector. Skipped when the list can't
+# be fetched; the check after the download then decides.
+reader_precheck() {
+  local model repo list want
+  model="$(reader_model)"; repo="${model%%:*}"; want="$(reader_mmproj_want)"
+  list="$(repo_listing "$repo")" || return 0
+  [[ -n "$list" ]] || return 0
+  [[ -n "$(pick_mmproj "$want" <<<"$list")" ]] || die "READER_LOCAL_MODEL=$model can't read images: $repo has no projector (mmproj) file${want:+ matching '$want'}. Choose a vision model."
+}
+
+# fetch_custom_reader: a reader chosen with READER_LOCAL_MODEL. llama.cpp downloads the model itself (-hf) on one online start,
+# unless the model file is already there and only a projector chosen by name is missing.
+fetch_custom_reader() {
+  reader_precheck
+  if [[ -z "$(reader_main_file)" || -z "$(reader_mmproj_want)" ]]; then
+    fetch_llama_model llm receipt-llm "reader" reader_present READER_MODEL_ARGS="$(reader_model_args fetch)" READER_OFFLINE=
+  fi
+  fetch_mmproj_by_name
+  if [[ -z "$(reader_mmproj_file)" ]]; then
+    die "READER_LOCAL_MODEL=$(reader_model) can't read images: no projector (mmproj) file came with it. Choose a vision model, or set READER_LOCAL_MMPROJ to the projector's file name."
+  fi
+}
+
+fetch_reader() {
+  if reader_is_default; then fetch_pinned_reader; else fetch_custom_reader; fi
+  say "Reader downloaded."
+  restore_llama_offline llm reader reader_present
+}
+
+fetch_decider() {
+  fetch_llama_model decider-gguf receipt-decider-gguf "decider" decider_present DECIDER_OFFLINE=
+  say "Decider downloaded."
+  restore_llama_offline decider-gguf decider decider_present
+}
+
+# say_models_present: what to tell when there is nothing to download.
+say_models_present() {
+  if remote_reader && remote_decider; then say "Models: both are hosted, nothing to download."
+  elif remote_reader; then say "Models: the reader is hosted; the decider is already downloaded."
+  elif remote_decider; then say "Models: the reader is already downloaded (the decider is hosted, nothing to download)."
+  else say "Models: both are already downloaded."; fi
+}
+
+# say_download_plan NEED_READER NEED_DECIDER: what is about to be downloaded.
+say_download_plan() {
+  if remote_reader; then say "Models: the decider is the only download (about 3 GB, fetched by llama.cpp from Hugging Face); the reader is hosted."
+  elif remote_decider; then say "Models: the reader is the only download (about 5 GB, from Hugging Face); the decider is hosted."
+  else say "Models: the only big download (about 8 GB in total, from Hugging Face)."; fi
+  if (( $1 )); then
+    if reader_is_default; then say "  reader ($(reader_model)): downloaded from Hugging Face at a pinned revision, with its image projector"
+    else say "  reader ($(reader_model)): fetched by llama.cpp on one online start, with its image projector"; fi
+  fi
+  if (( $2 )); then say "  decider ($(decider_model)): fetched by llama.cpp on one online start"; fi
+}
+
+# ensure_models_writable: ./models must be writable by this user (Docker creates it as root when it doesn't exist yet).
+ensure_models_writable() {
+  if mkdir -p models 2>/dev/null && [[ -w models ]]; then return 0; fi
+  say "The models folder isn't writable by you (Docker probably created it as root)."
+  if yn "Run 'sudo chown -R $USER models' to fix that?" Y; then
+    sudo chown -R "$(id -u):$(id -g)" models
+  else
+    die "Can't write to ./models. Fix the owner (sudo chown -R \$USER models) and run ./receipts download-models."
+  fi
+}
+
+download_models() {
+  local need_reader=0 need_decider=0
+  export_model_env
+  # A hosted reader or decider needs no download.
+  if ! remote_reader; then reader_present || need_reader=1; fi
+  if ! remote_decider; then decider_present || need_decider=1; fi
+  if (( need_reader == 0 && need_decider == 0 )); then say_models_present; return 0; fi
+  say_download_plan "$need_reader" "$need_decider"
+  if ! yn "Download now?" Y; then
+    say "Skipped. Run ./receipts download-models when you're ready."
+    return 0
+  fi
+  ensure_models_writable
+  if (( need_reader )); then fetch_reader; fi
+  if (( need_decider )); then fetch_decider; fi
+  say "Models are ready."
+}
+
+# ---- setup questions: where the decider and the reader run, the Nextcloud inbox ----
+
+# What a category description request sends to a cloud reader (the worker's DESCRIBE_SENDS says the same).
+describe_warning() {
+  say "The reader is a cloud service. Writing category descriptions sends it, for each category that has none:"
+  say "  - the category name"
+  say "  - how many transactions were filed there in the last year, and their median amount"
+  say "  - the store names (payees) filed there, with counts, and the stores your Actual rules send there"
+  say "  - the item notes you wrote on split transactions in that category (up to 30 per category)"
+  say "Nothing is anonymized here. The worker never does this on its own while the reader is a cloud service."
+}
+
+# Where the decider runs. Local (the default) changes nothing in .env. The hosted Jev needs an API key (read hidden, written
+# to .env only, never shown or passed on a command line) and gets every request anonymized first (docs/how-it-works.md).
+choose_decider() {
+  local was=N
+  remote_decider && was=Y
+  say "The decider picks a category for each item. It can run on this machine, or on TypeSafe's hosted Jev: you need an API key,"
+  say "requests are anonymized first (category names become codes, dates relative, names pseudonyms), and it frees about 3-7 GB of GPU memory."
+  if remote_reader; then say "Your reader is a cloud service, so the photos do not stay on this machine."
+  else say "The receipt reader and the photos stay on this machine."; fi
+  local want=N
+  yn "Run the decider on TypeSafe's hosted Jev instead of this machine?" "$was" && want=Y
+  if [[ $want == Y ]] && remote_reader && ! cloud_scan_optin; then
+    say "Not using the hosted decider together with a cloud reader. Use the local decider, or the local reader, or run setup again and accept."
+    want=N
+    if [[ $was == Y && $YES == 1 ]]; then
+      say "setup --yes: the decider was hosted next to a cloud reader without CLOUD_NAME_SCAN=true, so it is switched back to local. To keep both hosted, set CLOUD_NAME_SCAN=true in .env and run ./receipts setup again."
+    fi
+  fi
+  if [[ $want == Y ]]; then
+    [[ -n "$(env_get DECIDER_API_KEY)" ]] || ask_value DECIDER_API_KEY "your TypeSafe API key (input is hidden)" secret
+    env_set DECIDER_PROVIDER remote
+    [[ -n "$(env_get DECIDER_URL)" ]] || env_set DECIDER_URL https://api.typesafe.ai
+    [[ -n "$(env_get DECIDER_REMOTE_MODEL)" ]] || env_set DECIDER_REMOTE_MODEL jev-latest
+    compose_add "$REMOTE_OVERLAY"
+    compose_reader_last
+    [[ -n "$(env_get PRIVATE_WORDS)" ]] || ask_value PRIVATE_WORDS "first names and nicknames of your household, comma-separated, always hidden from the hosted model (Enter to skip; you can add more on the status page, Privacy)" "" optional
+    say "The decider will run on TypeSafe. Run ./receipts check once it is started to test the key."
+  elif [[ $was == Y ]]; then
+    env_set DECIDER_PROVIDER local
+    compose_remove "$REMOTE_OVERLAY"
+    env_unset CLOUD_NAME_SCAN
+    say "The decider runs on this machine again. DECIDER_API_KEY stays in .env; remove it if you won't use it."
+  fi
+}
+
+# ask_reader_account: the cloud reader's provider, model and API key. Keeps what .env has when the user agrees; the key belongs to
+# the host it was made for, so it is kept only when the host stays the same (it would be sent to the new one).
+ask_reader_account() {
+  local url model change=N old_host new_host
+  url="$(env_get READER_URL)"; model="$(env_get READER_MODEL)"
+  old_host="$(url_host "$url")"
+  if [[ -n "$url" ]]; then
+    url="${url#*://}"
+    say "Current cloud reader: ${url%%/*}, model ${model:-not set} (the key is not shown)."
+    yn "Keep this provider, model and key?" Y || change=Y
+  fi
+  if [[ -z "$(env_get READER_URL)" || $change == Y ]]; then
+    choose_reader_provider
+    new_host="$(url_host "$(env_get READER_URL)")"
+    ask_value READER_MODEL "$READER_HINT"
+    if [[ -n "$(env_get READER_API_KEY)" && -n "$old_host" && "$old_host" == "$new_host" ]]; then ask_value READER_API_KEY "your API key for that provider (input is hidden; Enter keeps the current one)" secret optional
+    else
+      if [[ -n "$(env_get READER_API_KEY)" ]]; then
+        env_unset READER_API_KEY
+        say "The provider changed ($new_host), so the old API key is removed: it would be sent to the new host. Enter a key for $new_host."
+      fi
+      ask_value READER_API_KEY "your API key for that provider (input is hidden)" secret
+    fi
+  else
+    [[ -n "$(env_get READER_MODEL)" ]] || ask_value READER_MODEL "the model name your provider uses"
+    [[ -n "$(env_get READER_API_KEY)" ]] || ask_value READER_API_KEY "your API key for that provider (input is hidden)" secret
+  fi
+}
+
+# Where the receipt reader runs. Local (the default) changes nothing in .env. A cloud reader gets the whole receipt photo,
+# so the warning comes first, and the key is read hidden, written to .env only, never shown or passed on a command line.
+choose_reader() {
+  local was=N want=N
+  remote_reader && was=Y
+  say "The reader turns each receipt photo into text. It can run on this machine (the default), or on a cloud vision model with your own"
+  say "OpenAI or OpenRouter API key. PRIVACY: with a cloud reader the whole photo leaves this machine: the store and its address, date and time,"
+  say "everything you bought, prices, the last digits of your card, member numbers, sometimes names, and barcodes. Location data in the photo"
+  say "is removed first. The decider's anonymizing does not apply to photos. The provider may keep requests for a while; check its current"
+  say "policy. With OpenRouter the request goes on to a third-party model provider, so check your OpenRouter privacy settings too."
+  say "It also costs money per photo and has not been tested on this pipeline's receipts: compare it with ./receipts replay first."
+  yn "Send receipt photos to a cloud reader instead of reading them on this machine?" "$was" && want=Y
+  if [[ $want == Y ]] && remote_decider && ! cloud_scan_optin; then
+    say "Not using a cloud reader together with the hosted decider. Use the local reader, or the local decider, or run setup again and accept."
+    want=N
+  fi
+  if [[ $want == Y ]]; then
+    ask_reader_account
+    env_set READER_PROVIDER remote
+    compose_add "$READER_OVERLAY"
+    compose_reader_last
+    say "The reader will run in the cloud; receipt photos are sent to $(env_get READER_URL). Run ./receipts check once it is started to test the key."
+  elif [[ $was == Y ]]; then
+    env_set READER_PROVIDER local
+    compose_remove "$READER_OVERLAY"
+    env_unset CLOUD_NAME_SCAN
+    say "The reader runs on this machine again. READER_API_KEY stays in .env; remove it if you won't use it."
+  fi
+}
+
+# url_host URL: the host (and port) of an address, lower case; empty for an empty address.
+url_host() { local u="${1#*://}"; u="${u%%/*}"; printf '%s' "${u,,}"; }
+
+# valid_reader_url URL: https, or http for a server on this machine only (the worker's checkRemoteUrl says the same).
+valid_reader_url() {
+  [[ "$1" =~ ^https://[^/[:space:]]+ ]] || [[ "$1" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$) ]]
+}
+
+# Ask which provider, repeating until the answer is 1, 2 or 3; sets READER_URL in .env and READER_HINT for the model question.
+choose_reader_provider() {
+  local provider addr
+  while true; do
+    say "Provider:  1) OpenAI   2) OpenRouter   3) another OpenAI-compatible address"
+    read -r -p "  1, 2 or 3: " provider || provider=""
+    case "$provider" in
+      1) env_set READER_URL https://api.openai.com/v1; READER_HINT="an OpenAI model name, e.g. gpt-4.1-mini"; return ;;
+      2) env_set READER_URL https://openrouter.ai/api/v1; READER_HINT="an OpenRouter model id, e.g. openai/gpt-4.1-mini"; return ;;
+      3)
+        while true; do
+          read -r -p "  the API base address (https://...): " addr || addr=""
+          if valid_reader_url "$addr"; then env_set READER_URL "$addr"; READER_HINT="the model name your provider uses"; return; fi
+          [[ -t 0 ]] || die "READER_URL is needed. Put it in .env (https only; http only for localhost) and run ./receipts setup again."
+          say "  That must start with https:// (http:// is only accepted for localhost, 127.0.0.1 and ::1)."
+        done
+        ;;
+      *)
+        [[ -t 0 ]] || die "READER_URL is needed. Put it in .env and run ./receipts setup again."
+        say "  Please type 1, 2 or 3."
+        ;;
+    esac
+  done
+}
+
+# Percent-encode every byte that isn't unreserved, so UTF-8 names come out as %C3%A9 (C locale: one char = one byte).
+urlenc() {
+  local LC_ALL=C s="$1" out="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in [A-Za-z0-9._~-]) out+="$c" ;; *) out+="$(printf '%%%02X' "'$c")" ;; esac
+  done
+  printf '%s' "$out"
+}
+
+# Create the inbox folder (and its parents) in Nextcloud over WebDAV. The password goes through a private
+# temp file (curl -K), never the command line.
+make_inbox() {
+  local cfg rc=0 old_int old_term
+  cfg="$(umask 077; mktemp)"
+  # The temp file holds the app password: remove it on Ctrl-C and on kill too. The traps last only for this function.
+  old_int="$(trap -p INT)"; old_term="$(trap -p TERM)"
+  trap 'rm -f "$cfg"; exit 130' INT
+  trap 'rm -f "$cfg"; exit 143' TERM
+  make_inbox_with "$cfg" || rc=$?
+  rm -f "$cfg" # explicit cleanup on every path (a RETURN trap would outlive this function and fire in later ones)
+  eval "${old_int:-trap - INT}"; eval "${old_term:-trap - TERM}"
+  return "$rc"
+}
+
+make_inbox_with() {
+  local cfg="$1" url user pass inbox path="" part code parts
+  url="$(env_get NEXTCLOUD_URL)"; user="$(env_get NEXTCLOUD_USER)"; pass="$(env_get NEXTCLOUD_APP_PASSWORD)"
+  inbox="$(env_get RECEIPTS_INBOX)"; inbox="${inbox:-/Receipts/Inbox}"
+  # curl config syntax: inside double quotes, \ and " are escaped with a backslash.
+  local bs='\'
+  pass="${pass//"$bs"/"$bs$bs"}"; pass="${pass//\"/"$bs\""}"
+  local cuser="${user//"$bs"/"$bs$bs"}"; cuser="${cuser//\"/"$bs\""}"
+  printf 'user = "%s:%s"\n' "$cuser" "$pass" > "$cfg"
+  IFS=/ read -ra parts <<< "$inbox"
+  for part in "${parts[@]}"; do
+    [[ -n "$part" ]] || continue
+    path+="/$(urlenc "$part")"
+    code="$(curl -sS --max-time "$HF_API_TIMEOUT" -o /dev/null -w '%{http_code}' -K "$cfg" -X MKCOL "${url%/}/remote.php/dav/files/$(urlenc "$user")$path" 2>/dev/null)" || code=000
+    case "$code" in
+      201) say "  created $path" ;;
+      405) say "  $path already exists" ;;
+      401|403) warn "Nextcloud refused the login ($code). Check NEXTCLOUD_USER and the app password."; return 1 ;;
+      *) warn "Couldn't create $path (HTTP $code). Create $inbox in Nextcloud yourself."; return 1 ;;
+    esac
+  done
+}
+
+# A GPU is available now. If an earlier run on a machine without one left the CPU settings in .env, offer to undo them.
+reset_cpu_settings() {
+  local llm decider current stripped
+  llm="$(env_get LLM_GPU_LAYERS)"; decider="$(env_get DECIDER_GPU_LAYERS)"; current="$(env_get COMPOSE_FILE)"
+  [[ ( "$llm" == 0 && "$decider" == 0 ) || "$current" == *compose.cpu.yaml* ]] || return 0
+  say "A GPU is available, but .env still has the CPU settings from an earlier run (LLM_GPU_LAYERS=${llm:-unset}, DECIDER_GPU_LAYERS=${decider:-unset}, COMPOSE_FILE=${current:-unset})."
+  if yn "Remove them so the models use the GPU?" Y; then
+    [[ "$llm" == 0 ]] && env_unset LLM_GPU_LAYERS
+    [[ "$decider" == 0 ]] && env_unset DECIDER_GPU_LAYERS
+    if [[ "$current" == *compose.cpu.yaml* ]]; then
+      stripped=":$current:"; stripped="${stripped//:compose.cpu.yaml:/:}"; stripped="${stripped#:}"; stripped="${stripped%:}"
+      if [[ -z "$stripped" || "$stripped" == compose.yaml ]]; then env_unset COMPOSE_FILE; else env_set COMPOSE_FILE "$stripped"; fi
+    fi
+    say "Removed the CPU settings from .env."
+  fi
+}
+
+# lan_address: this machine's address on the local network (the source address of the default route), or nothing.
+lan_address() { ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' || true; }
+
+# trigger_url: the status page link, with the key. TRIGGER_BIND=0.0.0.0 gives this machine's network address instead of localhost.
 trigger_url() {
-  local token bind host
-  token="$(grep -E '^TRIGGER_TOKEN=' .env | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//' | tr -d "'\"")"
-  bind="$(grep -E '^TRIGGER_BIND=' .env | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//' | tr -d "'\"")"
-  host=127.0.0.1
-  [[ "$bind" == 0.0.0.0 ]] && host="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
-  [[ -n "$bind" && "$bind" != 0.0.0.0 ]] && host="$bind"
+  local token bind host=127.0.0.1
+  token="$(env_get TRIGGER_TOKEN)"; bind="$(env_get TRIGGER_BIND)"
+  if [[ "$bind" == 0.0.0.0 ]]; then host="$(lan_address)"
+  elif [[ -n "$bind" ]]; then host="$bind"; fi
   echo "http://${host:-127.0.0.1}:8095/?key=${token}"
 }
 
-health() { docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || echo "not created"; }
+# ---- first-run setup (./receipts setup), in six steps ----
+
+setup_docker() {
+  say "== 1/6 Docker =="
+  command -v docker >/dev/null 2>&1 || die "Docker isn't installed. Install it from https://docs.docker.com/engine/install/ and run ./receipts setup again."
+  docker compose version >/dev/null 2>&1 || die "Docker is installed but 'docker compose' (v2) is missing. See https://docs.docker.com/compose/install/"
+  if docker info >/dev/null 2>&1; then
+    DOCKER_OK=1; say "Docker is working."
+  else
+    warn "Can't talk to the Docker daemon. If it isn't running: sudo systemctl start docker."
+    warn "If it's a permissions problem: sudo usermod -aG docker \$USER, then log out and in. Continuing with the steps that don't need it."
+  fi
+  if command -v systemctl >/dev/null 2>&1 && ! systemctl is-enabled --quiet docker 2>/dev/null; then
+    say "Docker isn't enabled at boot, so the pipeline wouldn't come back after a reboot."
+    if yn "Run 'sudo systemctl enable docker' now?" Y; then sudo systemctl enable docker || warn "That didn't work; do it later."; fi
+  fi
+}
+
+setup_env() {
+  say "== 2/6 Settings (.env) =="
+  ensure_env
+  if [[ $NEW_ENV == 1 && "$(env_get TRIGGER_TIMEZONE)" == UTC ]]; then env_set TRIGGER_TIMEZONE "$(host_timezone)"; fi # the example's placeholder
+  need_env
+  env_missing ACTUAL_SERVER_URL && ask_value ACTUAL_SERVER_URL "the URL you open Actual at, e.g. https://actual.example.lan (a service on this host: http://host.docker.internal:5006)"
+  env_missing ACTUAL_PASSWORD && ask_value ACTUAL_PASSWORD "the server password you log in to Actual with" secret
+  env_missing ACTUAL_SYNC_ID && ask_value ACTUAL_SYNC_ID "Actual: Settings > Show advanced settings > Sync ID"
+  if [[ -z "$(env_get ACTUAL_E2E_PASSWORD)" && ( $ASKED == 1 || $NEW_ENV == 1 ) ]]; then
+    ask_value ACTUAL_E2E_PASSWORD "only if the budget uses end-to-end encryption (Enter to skip)" secret optional
+  fi
+  env_missing NEXTCLOUD_URL && ask_value NEXTCLOUD_URL "your Nextcloud address, e.g. https://cloud.example.lan"
+  env_missing NEXTCLOUD_USER && ask_value NEXTCLOUD_USER "your Nextcloud login name"
+  env_missing NEXTCLOUD_APP_PASSWORD && ask_value NEXTCLOUD_APP_PASSWORD "Nextcloud: Personal settings > Security > Create new app password" secret
+  say ".env has everything it needs."
+}
+
+# gpu_vram_mib: the largest AMD/Intel GPU memory the kernel reports, in MiB, or nothing.
+gpu_vram_mib() {
+  local f best=0 b
+  for f in /sys/class/drm/card*/device/mem_info_vram_total; do
+    [[ -r "$f" ]] || continue
+    b="$(cat "$f")"; if [[ "$b" =~ ^[0-9]+$ ]] && (( b > best )); then best=$b; fi
+  done
+  if (( best > 0 )); then echo $(( best / 1048576 )); fi
+}
+
+# setup_gpu: pick the COMPOSE_FILE overlays for this machine's GPU (NVIDIA, AMD/Intel Vulkan, or none: CPU only).
+setup_gpu() {
+  say "== 3/6 GPU =="
+  local vram_mb="" want="compose.yaml" current base_current gid
+  if command -v nvidia-smi >/dev/null 2>&1 && vram_mb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n 1 | tr -d ' \r')" && [[ "$vram_mb" =~ ^[0-9]+$ ]]; then
+    say "NVIDIA GPU found (${vram_mb} MiB). Using the CUDA images."
+    want+=":compose.nvidia.yaml"
+  elif [[ -e /dev/dri ]]; then
+    vram_mb="$(gpu_vram_mib)"
+    gid="$(stat -c %g /dev/dri/renderD128 2>/dev/null || getent group render | cut -d: -f3 || true)"
+    if [[ -n "$gid" ]]; then
+      say "AMD/Intel GPU found${vram_mb:+ (${vram_mb} MiB)}. Using the Vulkan images (render group $gid)."
+      [[ "$(env_get RENDER_GID)" == "$gid" ]] || env_set RENDER_GID "$gid"
+    else
+      warn "Found /dev/dri but not its group. Set RENDER_GID in .env (getent group render)."
+    fi
+  else
+    vram_mb=""
+    say "No GPU found. The models will run on the CPU, only slowly (receipts aren't urgent)."
+    env_set LLM_GPU_LAYERS 0
+    env_set DECIDER_GPU_LAYERS 0
+    want+=":compose.cpu.yaml"
+    say "Set LLM_GPU_LAYERS=0 and DECIDER_GPU_LAYERS=0 in .env. Continuing."
+  fi
+  if [[ -n "$vram_mb" || -e /dev/dri ]]; then
+    reset_cpu_settings
+    if [[ -n "$vram_mb" ]] && (( vram_mb < SMALL_GPU_MIB )); then
+      say "Under 10 GB of GPU memory: using the smaller-memory settings."
+      want+=":compose.small-gpu.yaml"
+    elif [[ -z "$vram_mb" ]] && yn "Does the GPU have less than 10 GB, or is it shared with other apps?" N; then
+      want+=":compose.small-gpu.yaml"
+    fi
+  fi
+  current="$(env_get COMPOSE_FILE)" # read after reset_cpu_settings, which may have changed it
+  base_current="$(base_compose "$current")" # the hosted-decider and cloud-reader files are chosen in step 4
+  if [[ "$want" != compose.yaml && "$base_current" != "$want" ]]; then
+    if [[ -z "$current" ]] || yn "COMPOSE_FILE is already '$current'. Replace it with '$want'?" N; then
+      env_set COMPOSE_FILE "$want"; say "Set COMPOSE_FILE=$want"
+    fi
+  fi
+}
+
+setup_models() {
+  say "== 4/6 Decider and models =="
+  choose_decider
+  choose_reader
+  download_models
+}
+
+setup_inbox() {
+  say "== 5/6 Nextcloud folder =="
+  say "Receipts are read from $(env_get RECEIPTS_INBOX) in your Nextcloud."
+  if yn "Create that folder now over WebDAV?" N; then make_inbox || true; else say "Create it in Nextcloud yourself before uploading receipts."; fi
+}
+
+# setup_describe: offer to write category descriptions (a cloud reader is shown what it would be sent, and asked first).
+setup_describe() {
+  if remote_reader; then
+    describe_warning
+    if yn "Send that to the cloud reader and write descriptions now?" N; then
+      ./receipts describe --yes || warn "describe didn't finish; run ./receipts describe later."
+    else
+      say "Skipped. Run ./receipts describe when you want them (it asks again)."
+    fi
+  elif yn "Write descriptions for your Actual categories now (uses the models, takes a few minutes)?" Y; then
+    ./receipts describe || warn "describe didn't finish; run ./receipts describe later."
+  fi
+}
+
+# setup_start: start the pipeline, wait for the models, test the connections. Runs ./receipts as a separate process, so a failure
+# is reported here instead of ending setup.
+setup_start() {
+  say "== 6/6 Start =="
+  local c
+  if [[ "$DOCKER_OK" != 1 ]]; then
+    say "Docker wasn't reachable. Fix that, then run ./receipts start."
+  elif yn "Start the pipeline now ($(mode_blurb))?" Y; then
+    if ./receipts start; then
+      wait_for
+      for c in "${WAIT_FOR[@]}"; do wait_healthy "$c" "$STARTUP_WAIT_MINUTES" || warn "$c isn't healthy yet; see ./receipts status"; done
+      say "Testing the connections..."
+      if ./receipts check; then
+        setup_describe
+      else
+        warn "The check found a problem. Fix it in .env, then ./receipts restart and ./receipts check."
+      fi
+    else
+      warn "Starting failed. Things to try: ./receipts status (what is running), ./receipts logs (what the worker says), ./receipts check (tests the connections), then ./receipts start again."
+    fi
+  else
+    say "Start it later with ./receipts start."
+  fi
+}
+
+setup_next_steps() {
+  say ""
+  say "Done. Next:"
+  say "  1. Upload a test receipt to the Nextcloud inbox folder."
+  say "  2. Open the status page (below) and press \"Check for receipts now\". Dry run: nothing is changed."
+  say "  3. When the results look right, press \"Go live\" on the same page."
+  say ""
+  say "The status page is also where you edit category descriptions and keywords, and retry receipts."
+  if remote_decider; then say "Its Privacy page lists the names kept out of what the hosted decider gets."; fi
+  say "Keep the link private; it contains your key:"
+  say "  $(trigger_url)"
+}
+
+setup() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -y|--yes) YES=1 ;;
+      *) die "setup: unknown option '$arg' (only --yes)" ;;
+    esac
+  done
+  ASKED=0; NEW_ENV=0; DOCKER_OK=0
+  setup_docker
+  setup_env
+  setup_gpu
+  setup_models
+  setup_inbox
+  setup_start
+  setup_next_steps
+}
+
+# ---- commands: one cmd_* function per ./receipts command ----
+
+cmd_download_models() {
+  need_env
+  DOCKER_OK=0; docker info >/dev/null 2>&1 && DOCKER_OK=1
+  download_models
+}
+
+cmd_start() {
+  need_env
+  if ! systemctl is-enabled --quiet docker 2>/dev/null; then
+    echo "Note: Docker isn't enabled at boot, so the pipeline won't come back after a reboot."
+    echo "      Fix with: sudo systemctl enable docker"
+  fi
+  prepare_hosting
+  pick_services
+  if ! remote_reader && ! reader_present; then warn "The reader model ($(reader_model)) isn't fully downloaded (model file and image projector). Run ./receipts download-models."; fi
+  # Switched to the hosted decider with the local one still running: stop it, so it frees its GPU memory.
+  if remote_decider; then docker compose stop decider-gguf >/dev/null 2>&1 || true; fi
+  # Same for the local reader after switching to a cloud one.
+  if remote_reader; then docker compose stop llm >/dev/null 2>&1 || true; fi
+  docker compose up -d --build "${SERVICES[@]}"
+  if remote_reader; then echo "*** Receipt photos are sent to $(env_get READER_URL) (READER_PROVIDER=remote). See the README, \"Cloud reader\". ***"; fi
+  if remote_reader && remote_decider; then echo "Started in $(mode) mode, reader and decider hosted. Only the worker runs here."
+  elif remote_reader; then echo "Started in $(mode) mode, reader in the cloud. The worker starts once the decider model has loaded (about a minute)."
+  elif remote_decider; then echo "Started in $(mode) mode, decider on TypeSafe (hosted). The worker starts once the reader model has loaded (about a minute)."
+  else echo "Started in $(mode) mode. The worker starts once both models have loaded (about a minute)."; fi
+  echo "Watch it with: ./receipts logs"
+}
+
+cmd_stop() {
+  pick_services
+  docker compose stop "${SERVICES[@]}"
+}
+
+cmd_restart() {
+  need_env
+  prepare_hosting
+  pick_services
+  # The services the new setup needs (decider-gguf after a switch to local, llm after a switch from a cloud reader).
+  docker compose up -d "${SERVICES[@]}"
+  # up -d (not restart) so .env changes are picked up.
+  docker compose up -d --force-recreate worker
+}
+
+# print_worker_alert: the note the worker leaves in data/worker-alert.json when a setup problem (a refused API key, ...) has paused its checks.
+print_worker_alert() {
+  [[ -f data/worker-alert.json ]] || return 0
+  echo "*** WORKER ALERT: $(sed -n 's/.*"message":"\(\([^"\\]\|\\.\)*\)".*/\1/p' data/worker-alert.json | sed 's/\\"/"/g; s/\\\\/\\/g' | head -c 400)"
+  if grep -q '"pausing":false' data/worker-alert.json; then
+    echo "    (a notice: receipts keep being processed. It clears after the next check that goes through)"
+  else
+    echo "    (a paused worker keeps receipts in the inbox and marks none failed. Fix the cause, then ./receipts restart)"
+  fi
+}
+
+cmd_status() {
+  local c note
+  echo "mode: $(mode)"
+  note="$(mode_note)"; [[ -z "$note" ]] || echo "  $note"
+  wait_for
+  for c in "${WAIT_FOR[@]}" receipt-worker; do printf '  %-22s %s\n' "$c" "$(health "$c")"; done
+  if remote_reader; then echo "  reader                 cloud ($(env_get READER_MODEL) at $(env_get READER_URL)); receipt photos leave this machine; ./receipts check tests the key"
+  else echo "  reader                 $(reader_name)"; fi
+  if remote_decider; then echo "  decider                TypeSafe (hosted, anonymized); ./receipts check tests the key"; fi
+  if [[ -f data/heartbeat ]]; then echo "last poll: $(cat data/heartbeat)"; fi
+  print_worker_alert
+  echo "--- recent worker log ---"
+  docker logs --tail 60 receipt-worker 2>&1 | quiet | tail -15
+}
+
+cmd_logs() {
+  docker logs -f --tail 200 receipt-worker 2>&1 | quiet
+}
+
+cmd_run_now() {
+  docker kill -s USR1 receipt-worker >/dev/null && echo "Asked the worker to check the inbox now. Watch with: ./receipts logs"
+}
+
+cmd_mode() {
+  local info note answer
+  need_env
+  case "${1:-}" in
+    dry)
+      set_mode true
+      echo "Dry run: the worker logs what it would do and changes nothing."
+      echo "It switches at the start of its next check; ./receipts run-now does that right away."
+      ;;
+    live)
+      echo "Live mode: the worker will split and recategorize transactions in Actual and move receipts in Nextcloud."
+      echo "Receipts already seen in dry run are processed again for real."
+      read -r -p "Type 'live' to confirm: " answer
+      [[ "$answer" == live ]] || { echo "Cancelled."; exit 1; }
+      set_mode false
+      echo "Live. The worker switches at the start of its next check; ./receipts run-now does that right away."
+      echo "Watch the first receipts with: ./receipts logs"
+      ;;
+    *)
+      info="$(mode_info)"
+      echo "mode: ${info%%|*}   (${info#*|}; change with ./receipts mode dry|live)"
+      ;;
+  esac
+  note="$(mode_note)"; [[ -z "$note" ]] || echo "$note"
+}
+
+cmd_update() {
+  need_env
+  prepare_hosting
+  pick_services
+  docker compose build worker
+  docker compose up -d "${SERVICES[@]}"
+}
+
+cmd_describe() {
+  local confirmed=0 dargs=() a
+  need_env
+  if remote_reader; then
+    # A cloud reader gets category names, store names, amounts and item notes: say so and ask first (the worker script refuses without --yes).
+    for a in "$@"; do if [[ "$a" == --yes || "$a" == -y ]]; then confirmed=1; else dargs+=("$a"); fi; done
+    if (( ! confirmed )); then
+      describe_warning
+      YES=0
+      yn "Send that to the cloud reader and write the descriptions?" N || { say "Cancelled. Nothing was sent."; exit 1; }
+    fi
+    set -- ${dargs[@]+"${dargs[@]}"} --yes
+  fi
+  one_off describe-categories.js "$@"
+}
+
+cmd_trigger_url() {
+  local url
+  need_env
+  url="$(trigger_url)"
+  echo "Status page (bookmark it, or link it from an Actual note):"
+  echo "  $url"
+  echo "Webhook (POST):"
+  echo "  ${url/\/?key=//run?key=}"
+  echo "Keep these private: anyone with the link can check the inbox, see recent receipts, switch to live, edit categories and keywords, and retry receipts."
+}
 
 usage() {
   cat <<'EOF'
 Usage: ./receipts <command>
 
+  setup [--yes]   first-run install: checks Docker, fills in .env, detects the GPU, asks where the decider runs (this
+                  machine, or TypeSafe's hosted Jev with an API key; anonymized), downloads the models (about 8 GB), starts
+                  it, tests the connections, writes category descriptions (asks first with a cloud reader), prints the status page link
+                  (--yes: take the default answer to every question)
+  download-models download the two models (reader and decider); safe to re-run, and needed after changing DECIDER_MODEL or READER_LOCAL_MODEL
   start           build if needed and start the models and the worker (stays up across reboots)
   stop            stop everything (frees the GPU; stays stopped until you start it again)
-  restart         restart the worker (after editing .env or category-notes.json)
+  restart         restart the worker (after editing .env)
   status          mode, container health, and the last log lines
   logs            follow the worker log (Ctrl-C to stop watching; the worker keeps running)
-  run-now         check the Nextcloud inbox now instead of waiting for the next poll
-  check           test the connections to Nextcloud, Actual and both models (changes nothing)
-  mode dry|live   switch between dry run (changes nothing) and live (writes to Actual, moves files)
-  update          rebuild the worker after code or ACTUAL_API_VERSION changes, and restart it
+  run-now         check the Nextcloud inbox now instead of waiting for the next poll (same as the status page button)
+  check           test the connections to Nextcloud, Actual and the models (with the hosted decider: its address and API key); changes nothing
+  mode dry|live   switch between dry run (changes nothing) and live (writes to Actual, moves files) at the next check;
+                  same as the switch on the status page
+  update          rebuild the worker after a code update or a change to a pinned ACTUAL_API_VERSION, and restart it
+                  (not needed with ACTUAL_API_VERSION=auto after an Actual upgrade)
   replay ARGS     dry-run comparison against your own categorizing, e.g.
                     ./receipts replay --nextcloud "/Receipts/Test"
                     ./receipts replay --nextcloud "/Receipts/Inbox" --only 212537,212930
-  trigger-url     the link to the status page with a "check now" button (and the webhook URL)
-  describe        write descriptions for categories that have none (add --refresh to rewrite the auto ones)
+                    ./receipts replay --nextcloud "/Receipts/Test" --preview-remote jev-preview
+                      (writes the exact anonymized requests the hosted decider would get to data/research/jev-preview/,
+                       one file per item, as {held_back, body}; calls no decider. With a cloud reader it still sends the
+                       receipt photos and the name-scan texts to that reader, and needs CLOUD_NAME_SCAN=true)
+  trigger-url     the status page link (check now, dry run/live, categories, keywords, Try again) and the webhook URL
+  describe        write descriptions for categories that have none (add --refresh to rewrite the auto ones). With a cloud reader
+                  it lists what would be sent (category names, store names, amounts, your item notes) and asks first; --yes skips the question
   keyword CMD     household keywords: add <phrase> <category> [--at <store>] [--always|--usually] | remove <phrase> [--at <store>] | list | test <item text> [--at <store>]
   item-test N B   leave-one-out test of backend B (decider, or rules = no model) on your own split notes; saves data/research/item-test-N.json
+                  with the hosted decider it refuses unless you add --allow-remote (it would send a year of your split notes,
+                  anonymized first; with a cloud reader the name scan sends those notes to the reader's provider as they are)
+  help            this list
 EOF
 }
 
+# ---- main ----
+
+export_model_env # the reader's llama.cpp flags for every docker compose call below
 cmd="${1:-help}"
 shift || true
 case "$cmd" in
-  start)
-    need_env
-    if ! systemctl is-enabled --quiet docker 2>/dev/null; then
-      echo "Note: Docker isn't enabled at boot, so the pipeline won't come back after a reboot."
-      echo "      Fix with: sudo systemctl enable docker"
-    fi
-    docker compose up -d --build "${SERVICES[@]}"
-    echo "Started in $(mode) mode. The worker starts once both models have loaded (about a minute)."
-    echo "Watch it with: ./receipts logs"
-    ;;
-  stop)
-    docker compose stop "${SERVICES[@]}"
-    ;;
-  restart)
-    need_env
-    # up -d (not restart) so .env changes are picked up.
-    docker compose up -d --force-recreate worker
-    ;;
-  status)
-    echo "mode: $(mode)"
-    for c in receipt-llm receipt-decider-gguf receipt-worker; do printf '  %-22s %s\n' "$c" "$(health "$c")"; done
-    if [[ -f data/heartbeat ]]; then echo "last poll: $(cat data/heartbeat)"; fi
-    echo "--- recent worker log ---"
-    docker logs --tail 60 receipt-worker 2>&1 | quiet | tail -15
-    ;;
-  logs)
-    docker logs -f --tail 200 receipt-worker 2>&1 | quiet
-    ;;
-  run-now)
-    docker kill -s USR1 receipt-worker >/dev/null && echo "Asked the worker to check the inbox now. Watch with: ./receipts logs"
-    ;;
-  check)
-    one_off check.js
-    ;;
-  mode)
-    need_env
-    case "${1:-}" in
-      dry)
-        sed -i 's/^DRY_RUN=.*/DRY_RUN=true/' .env
-        docker compose up -d --force-recreate worker
-        echo "Dry run: the worker logs what it would do and changes nothing."
-        ;;
-      live)
-        echo "Live mode: the worker will split and recategorize transactions in Actual and move receipts in Nextcloud."
-        echo "Receipts already seen in dry run are processed again for real."
-        read -r -p "Type 'live' to confirm: " answer
-        [[ "$answer" == live ]] || { echo "Cancelled."; exit 1; }
-        sed -i 's/^DRY_RUN=.*/DRY_RUN=false/' .env
-        docker compose up -d --force-recreate worker
-        echo "Live. Watch the first receipts with: ./receipts logs"
-        ;;
-      *) echo "mode: $(mode)   (change with ./receipts mode dry|live)" ;;
-    esac
-    ;;
-  update)
-    need_env
-    docker compose build worker
-    docker compose up -d worker
-    ;;
-  replay)
-    one_off replay.js "$@"
-    ;;
-  describe)
-    one_off describe-categories.js "$@"
-    ;;
-  item-test)
-    one_off item-test.js "$@"
-    ;;
-  keyword)
-    one_off keyword-cli.js "$@"
-    ;;
-  trigger-url)
-    need_env
-    url="$(trigger_url)"
-    echo "Status page (bookmark it, or link it from an Actual note):"
-    echo "  $url"
-    echo "Webhook (POST):"
-    echo "  ${url/\/?key=//run?key=}"
-    echo "Keep these private: anyone with the key can trigger a check and see recent results."
-    ;;
+  setup) setup "$@" ;;
+  download-models) cmd_download_models ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_restart ;;
+  status) cmd_status ;;
+  logs) cmd_logs ;;
+  run-now) cmd_run_now ;;
+  check) one_off check.js ;;
+  mode) cmd_mode "$@" ;;
+  update) cmd_update ;;
+  replay) one_off replay.js "$@" ;;
+  describe) cmd_describe "$@" ;;
+  item-test) one_off item-test.js "$@" ;;
+  keyword) one_off keyword-cli.js "$@" ;;
+  trigger-url) cmd_trigger_url ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;
 esac

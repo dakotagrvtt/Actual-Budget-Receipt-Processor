@@ -1,6 +1,7 @@
-# Smaller GPUs, or a GPU shared with other apps (e.g. Immich machine learning): same models, less memory.
+# Smaller GPUs, or a GPU shared with other apps (e.g. a photo library's machine learning): same models, less memory.
+# ./receipts setup adds this file (COMPOSE_FILE in .env) when the GPU has under 10 GB. By hand:
 #   docker compose -f compose.yaml -f compose.small-gpu.yaml up -d
-# Add -f compose.nvidia.yaml as well on NVIDIA. Measured on Vulkan (RX 7900 XT), at load:
+# Add -f compose.nvidia.yaml as well on NVIDIA. Measured on Vulkan (an AMD card), at load:
 #   default:   reader 5.6 GB (32k context, 4 slots) + decider 2.7 GB  = about 8.3 GB
 #   this file: reader 5.1 GB (16k context, 1 slot)  + decider 2.3 GB  = about 7.4 GB
 #   DECIDER_GPU_LAYERS=0 in .env: decider on the CPU instead           = about 5.1 GB on the GPU
@@ -12,17 +13,18 @@
 services:
   llm:
     command: >
-      -m /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q8_0.gguf
-      --mmproj /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-BF16.gguf
+      ${READER_MODEL_ARGS:--m /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q8_0.gguf --mmproj /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-BF16.gguf} ${READER_OFFLINE:-}
       --host 0.0.0.0 --port 8080
-      -ngl 99 -c 16384 -np 1
+      -ngl ${LLM_GPU_LAYERS:-99} -c 16384 -np 1
       --temp 0.1 --top-k 20 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0
       --reasoning-budget ${READER_REASONING_BUDGET:-0}
       --reasoning-budget-message "Time is up. Stop thinking and write the JSON answer now."
+      --sleep-idle-seconds ${MODEL_SLEEP_SECONDS:-300}
 
   decider-gguf:
     command: >
       -hf ${DECIDER_MODEL:-LiquidAI/d1-2B-GGUF:Q8_0}
       --host 0.0.0.0 --port 8080
       -ngl ${DECIDER_GPU_LAYERS:-99} -c ${DECIDER_CTX:-8192} -np 1 -b ${DECIDER_BATCH:-4096} -ub ${DECIDER_BATCH:-4096}
-      --offline
+      ${DECIDER_OFFLINE---offline}
+      --sleep-idle-seconds ${MODEL_SLEEP_SECONDS:-300}

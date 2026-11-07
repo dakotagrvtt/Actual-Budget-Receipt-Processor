@@ -22,43 +22,48 @@ x-llama: &llama
 
 services:
   # Local vision model (the receipt reader): Qwen3.5-4B (unsloth Q8_0 + BF16 vision projector) served by llama.cpp
-  # with an OpenAI-compatible API. Vulkan backend: works on the RX 7900 XT without a ROCm image. Uses ~6 GB VRAM.
-  # Chosen over LFM3-VL-2B after a 25-receipt comparison: all totals right, more items adding up, faster with
-  # thinking off.
+  # with an OpenAI-compatible API. Vulkan backend: works on AMD cards without a ROCm image. Uses ~5.6 GB VRAM.
   llm:
     <<: *llama
     container_name: receipt-llm
-    # Loads the downloaded files by path, so it never contacts Hugging Face. Thinking is off by default
-    # (--reasoning-budget 0; the worker also asks for it off, LLM_THINKING=false). The worker sends its own sampling.
+    # Loads the downloaded files by path, so it never contacts Hugging Face. ./receipts sets READER_MODEL_ARGS (the files of
+    # READER_LOCAL_MODEL, found in ./models); without it, as with plain `docker compose`, the default model below is used,
+    # pinned to one Hugging Face snapshot (the same revision ./receipts downloads).
+    # Thinking is off by default (--reasoning-budget 0; the worker also asks for it off, LLM_THINKING=false).
+    # The worker sends its own sampling.
     command: >
-      -m /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q8_0.gguf
-      --mmproj /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-BF16.gguf
+      ${READER_MODEL_ARGS:--m /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q8_0.gguf --mmproj /models/models--unsloth--Qwen3.5-4B-GGUF/snapshots/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-BF16.gguf} ${READER_OFFLINE:-}
       --host 0.0.0.0 --port 8080
-      -ngl 99 -c 32768
+      -ngl ${LLM_GPU_LAYERS:-99} -c 32768
       --temp 0.1 --top-k 20 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0
       --reasoning-budget ${READER_REASONING_BUDGET:-0}
       --reasoning-budget-message "Time is up. Stop thinking and write the JSON answer now."
+      --sleep-idle-seconds ${MODEL_SLEEP_SECONDS:-300}
     ports:
       - "127.0.0.1:8090:8080"   # local-only, for testing with curl or the built-in web chat
 
   # The decider: the model that picks a category for each item, served by llama.cpp on Vulkan.
-  # The worker calls its /v1/systemone endpoint. Any /v1/systemone model already in ./models works, set with
-  # DECIDER_MODEL. The default is d1-2B (~2.5 GB VRAM); vLLM d3-flash 9B picks hard items better (docs/research.md,
-  # section 4).
+  # The worker calls its /v1/systemone endpoint. Any /v1/systemone GGUF model works, set with DECIDER_MODEL
+  # (./receipts download-models fetches it). The default is d1-2B (~2.7 GB VRAM); vLLM d3-flash 9B picks hard items
+  # better (docs/research.md, section 4).
   decider-gguf:
     <<: *llama
     container_name: receipt-decider-gguf
+    # Runs offline once the model is in ./models. ./receipts setup / download-models start it once with
+    # DECIDER_OFFLINE= (empty) to fetch the model; unset, the flag is --offline.
     command: >
       -hf ${DECIDER_MODEL:-LiquidAI/d1-2B-GGUF:Q8_0}
       --host 0.0.0.0 --port 8080
-      -ngl 99 -c ${DECIDER_CTX:-16384} -b ${DECIDER_BATCH:-8192} -ub ${DECIDER_BATCH:-8192}
-      --offline
+      -ngl ${DECIDER_GPU_LAYERS:-99} -c ${DECIDER_CTX:-16384} -b ${DECIDER_BATCH:-8192} -ub ${DECIDER_BATCH:-8192}
+      ${DECIDER_OFFLINE---offline}
+      --sleep-idle-seconds ${MODEL_SLEEP_SECONDS:-300}
 
   # Watches the Nextcloud inbox folder, reads receipts with the model, categorizes matching Actual transactions.
   worker:
     build:
       context: ./worker
       args:
+        # "auto" = the worker installs the API version your Actual server runs, at start (cached under data/actual-api).
         ACTUAL_API_VERSION: ${ACTUAL_API_VERSION:-latest}
     container_name: receipt-worker
     env_file: .env
@@ -70,8 +75,8 @@ services:
       - "host.docker.internal:host-gateway"   # lets ACTUAL_SERVER_URL / NEXTCLOUD_URL point at services on this host
     volumes:
       - ./data:/data
-    # Trigger page / webhook (needs TRIGGER_TOKEN). This machine only by default; set TRIGGER_BIND=0.0.0.0 in .env
-    # to reach it from other devices on your network (phone, Nextcloud server).
+    # Status page / webhook (needs TRIGGER_TOKEN). This machine only by default; set TRIGGER_BIND=0.0.0.0 in .env
+    # to reach it from other devices on your network (phone, Nextcloud server). Plain HTTP: keep it on your own network.
     ports:
       - "${TRIGGER_BIND:-127.0.0.1}:8095:8095"
     # Start only once both models have loaded (the llama.cpp images have their own /health check).

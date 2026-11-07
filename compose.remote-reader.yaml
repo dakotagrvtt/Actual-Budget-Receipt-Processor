@@ -1,0 +1,16 @@
+# The receipt reader on a cloud vision model with your own OpenAI or OpenRouter key instead of this machine
+# (READER_PROVIDER=remote in .env). ./receipts setup adds this file to COMPOSE_FILE when you choose it. By hand:
+#   docker compose -f compose.yaml -f compose.remote-reader.yaml up -d decider-gguf worker
+# WARNING: every receipt photo is sent to that provider. Read "Cloud reader" in the README first.
+# llm moves into a profile nothing turns on, so it never starts and its GPU memory (about 5.6 GB) stays free.
+# Start the services by name (./receipts start does). The worker then no longer waits for the reader.
+# If compose.remote-decider.yaml is also in COMPOSE_FILE, list this file after it (./receipts setup does): that file
+# sets the worker's dependencies to the reader only, and this one removes the reader from them, so the worker waits for nothing.
+# Needs Docker Compose 2.24 or newer (!reset), like the other overlay's !override.
+services:
+  llm:
+    profiles: ["local-reader"]
+
+  worker:
+    depends_on:
+      llm: !reset null
