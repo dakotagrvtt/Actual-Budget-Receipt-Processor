@@ -177,10 +177,10 @@ test('tax: HST at 13% is spread by item once TAX_BY_ITEM_MAX_RATE allows it', ()
   assert.equal(byLabel(allocation)[b.kinds.grocery], 499, 'the untaxed apples carry no HST');
 });
 
-test('tax: F-coded food the reader called taxed carries no tax (checkReceipt drops the yes), and the parts still add up', () => {
+test('tax: an F-coded item is read like any other code (no printed F line: no tax), and the parts still add up', () => {
   const b = budget('standard');
   const r = filed('f-coded-food', b);
-  assert.deepEqual(r.items.map((i) => i.taxable), [null, null, true]);
+  assert.deepEqual(r.items.map((i) => i.taxable), [true, true, true]);
   const res = allocate(r, labelMap(b), cents(r.total));
   checkAllocation(res, r, labelMap(b), cents(r.total), 'f-coded');
   if (res.taxByItem) assert.equal(byLabel(res.allocation)[b.kinds.grocery], 748, 'when tax is spread by item, the F food carries none');

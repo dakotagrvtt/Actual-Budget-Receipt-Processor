@@ -290,9 +290,10 @@ function tidyTaxLines(receipt, taxCents) {
  * Printed tax lines (receipt.tax_lines, each {code, rate in percent, amount}) are tidied first: lines with the same
  * code are added up (case matters: "t" and "T" are two codes), a code-less line equal to the whole tax (a "TOTAL TAX" line) is dropped when the others make up
  * the tax, and a zero line no item carries is dropped. An item whose code matches a line is taxed when that line's
- * amount is above 0; a line code that no item carries
- * is matched to an item code (matchCodes: ignoring case unless the lines hold "t" and "T", else by the taxed amount or printed rate); with printed per-rate lines (any line with a code) that is the only signal: a code with a line
- * amount of 0, with no line, or no code is untaxed, and the reader's yes or no is ignored. Codes are never interpreted
+ * amount is above 0; a line code that no item carries is matched to an item code (matchCodes: ignoring case unless the
+ * lines hold "t" and "T", else by the taxed amount or printed rate). With printed per-rate lines (any line with a code) that
+ * is the only signal: a code with a line amount of 0, with no line, or no code is untaxed, and the reader's yes or no is
+ * ignored. Codes are never interpreted
  * (what a letter means differs by store and state), only matched to the receipt's own lines. Without coded lines
  * (a single "TAX 2.68", or none) the reader's yes or no is the only signal.
  * - The taxed items carry one code at most (or the lines have no codes): the whole tax is spread over the taxed items;
@@ -302,7 +303,8 @@ function tidyTaxLines(receipt, taxCents) {
  * In both cases the rate (tax over its taxed items' amounts) must be above 0 and up to TAX_BY_ITEM_MAX_RATE (12%); a line
  * with a printed rate must also match it (percent or fraction) within max(3 cents, 5%).
  * A category whose taxed items net negative (a coupon bigger than its items) counts as 0 taxed.
- * Returns { taxCents, taxed, shares: per-category tax in cents, byRate: [{code, amount, base}] or null }, in the order of `nets`.
+ * Returns { taxCents, taxed, shares: per-category tax in cents, byRate: [{code, amount, base, rate}] or null, single?: { code, rate } }
+ * (single: the one taxed code, in the one-code case), in the order of `nets`.
  */
 function taxPlan(receipt, nets, targetCents) {
   if (!config.taxByItem || receipt.tax == null) return null;
@@ -333,7 +335,8 @@ function taxPlan(receipt, nets, targetCents) {
     // The one matched line, when it prints a rate, must fit the items (its base was checked in matchCodes).
     const only = lines?.find((l) => taxedCodes.has(l.code));
     if (only && only.rate != null && !rateFits(only.rate, only.amount, sum(taxed))) return null;
-    return { taxCents, taxed, shares: apportion(taxed, taxCents), byRate: null };
+    const code = only?.code ?? [...taxedCodes][0] ?? null;
+    return { taxCents, taxed, shares: apportion(taxed, taxCents), byRate: null, single: { code, rate: only?.rate ?? null } };
   }
   // Two or more rates: only the printed lines can say which tax belongs to which items.
   if (!lines || lines.some((l) => !l.code) || Math.abs(sum(lines.map((l) => l.amount)) - taxCents) > 1) return null;
@@ -349,9 +352,70 @@ function taxPlan(receipt, nets, targetCents) {
     // The printed rate (percent, or a fraction) must fit the items: otherwise the codes sit on the wrong items.
     if (line.rate != null && !rateFits(line.rate, amounts[i], base)) return null;
     apportion(bases, amounts[i]).forEach((c, k) => { shares[k] += c; });
-    byRate.push({ code: line.code, amount: amounts[i], base });
+    byRate.push({ code: line.code, amount: amounts[i], base, rate: line.rate ?? null });
   }
   return { taxCents, taxed: shares, shares, byRate };
+}
+
+/** Tax-included prices (EU VAT), see allocate. */
+function isTaxIncluded(receipt, itemsSum) {
+  return receipt.subtotal != null && receipt.tax != null && cents(receipt.tax) > 0
+    && Math.abs(itemsSum - cents(receipt.total)) <= drift(cents(receipt.total))
+    && Math.abs(cents(receipt.subtotal) + cents(receipt.tax) + cents(receipt.tip ?? 0) - cents(receipt.total)) <= 1
+    && Math.abs(itemsSum - cents(receipt.subtotal)) > drift(cents(receipt.subtotal));
+}
+
+/** A printed rate as a percent (it may be a fraction), else the rate the amount works out to; 3 decimals. */
+function ratePercent(printed, amount, base) {
+  const fit = printed != null ? [printed, printed * 100].find((pct) => Math.abs(amount - (pct / 100) * base) <= Math.max(3, 0.05 * amount)) : undefined;
+  return Math.round((fit ?? (base > 0 ? (amount / base) * 100 : 0)) * 1000) / 1000;
+}
+
+/**
+ * How the tax was (or would be) spread, from a taxPlan result: { how: 'by-rate' | 'by-item' | 'proportional', lines: [{code, rate, base, amount}], reason },
+ * money as 2-decimal strings, rate in percent. null when there is no tax to explain or TAX_BY_ITEM is off.
+ * `why` names the reason for a proportional spread when the caller knows it (otherwise it is worked out from the receipt).
+ */
+export function describeTax(receipt, plan, why = null) {
+  if (!config.taxByItem || receipt?.tax == null || !(cents(receipt.tax) > 0)) return null;
+  const line = (code, rate, base, amount) => ({ code, rate: ratePercent(rate, amount / 100, base / 100), base: money(base), amount: money(amount) });
+  if (plan?.byRate) return { how: 'by-rate', lines: plan.byRate.map((l) => line(l.code, l.rate, l.base, l.amount)), reason: null };
+  if (plan) {
+    const base = plan.taxed.reduce((n, c) => n + c, 0);
+    return { how: 'by-item', lines: [line(plan.single?.code ?? null, plan.single?.rate ?? null, base, plan.taxCents)], reason: null };
+  }
+  return { how: 'proportional', lines: [], reason: why ?? proportionalReason(receipt) };
+}
+
+function proportionalReason(receipt) {
+  const items = Array.isArray(receipt.items) ? receipt.items : [];
+  const itemsCents = items.reduce((n, it) => n + cents(it.amount), 0);
+  const taxCents = cents(receipt.tax);
+  if (receipt.subtotal == null || Math.abs(itemsCents - cents(receipt.subtotal)) > 2) return "the items don't add up to the subtotal";
+  if (Math.abs(cents(receipt.subtotal) + taxCents + cents(receipt.tip ?? 0) - cents(receipt.total)) > 1) return "the subtotal, tax and tip don't add up to the total";
+  const perRate = Array.isArray(receipt.tax_lines) && receipt.tax_lines.some((l) => l?.code);
+  const marked = items.some((it) => it.taxable === true || (perRate && it.tax_code));
+  if (!marked && !items.every((it) => cents(it.amount) <= 0 || typeof it.taxable === 'boolean')) return 'no tax marks';
+  if (!marked) return 'no item is marked as taxed';
+  return "the tax marks don't fit the receipt's tax lines or a believable rate";
+}
+
+/**
+ * Explain from the receipt alone (for a summary saved without the field): runs taxPlan with all items as one group,
+ * since only the per-rate split matters. Same shape as describeTax; null when nothing applies. No Actual calls.
+ */
+export function explainTax(receipt) {
+  try {
+    if (!receipt || !Array.isArray(receipt.items) || !receipt.items.length || receipt.tax == null || !config.taxByItem) return null;
+    const itemsSum = receipt.items.reduce((n, it) => n + cents(it.amount), 0);
+    if (itemsSum <= 0) return null;
+    const target = Number.isFinite(cents(receipt.total)) ? cents(receipt.total) : itemsSum + cents(receipt.tax);
+    const included = isTaxIncluded(receipt, itemsSum);
+    const plan = included ? null : taxPlan(receipt, [['all', { cents: itemsSum, refs: receipt.items }]], target);
+    return describeTax(receipt, plan, included ? 'the prices already include the tax' : null);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -398,10 +462,7 @@ export function allocate(receipt, labelToId, targetCents, { gapLabel = UNCATEGOR
 
   // Tax-included prices (EU VAT): the items add up to the total, and the printed subtotal is the net amount (subtotal + tax = total).
   // The prices already carry the tax, so nothing is misread, no tax goes on top and the tax-by-item spread does not apply.
-  const taxIncluded = receipt.subtotal != null && receipt.tax != null && cents(receipt.tax) > 0
-    && Math.abs(itemsSum - cents(receipt.total)) <= drift(cents(receipt.total))
-    && Math.abs(cents(receipt.subtotal) + cents(receipt.tax) + cents(receipt.tip ?? 0) - cents(receipt.total)) <= 1
-    && Math.abs(itemsSum - cents(receipt.subtotal)) > drift(cents(receipt.subtotal));
+  const taxIncluded = isTaxIncluded(receipt, itemsSum);
   if (receipt.subtotal != null && !taxIncluded) {
     const subtotal = cents(receipt.subtotal);
     if (Math.abs(itemsSum - subtotal) > drift(subtotal)) {
@@ -420,6 +481,7 @@ export function allocate(receipt, labelToId, targetCents, { gapLabel = UNCATEGOR
     return { allocation: null, problems: [...problems, 'returns and coupons cancel out the purchases'] };
   }
   // The unread-money part (a subtotal mismatch) means the item list is incomplete, so the tax can't be pinned on items.
+  const unread = problems.length > 0; // decided here, before the credit and tax-gap problems below are added
   const plan = problems.length === 0 && !taxIncluded ? taxPlan(receipt, nets, targetCents) : null;
   if (receipt.taxGap) {
     const { cents: g, codes } = receipt.taxGap;
@@ -432,7 +494,8 @@ export function allocate(receipt, labelToId, targetCents, { gapLabel = UNCATEGOR
   for (const a of allocation) {
     if (a.cents < 0) problems.push(`includes a credit of ${money(-a.cents)} in "${a.label}" (a return or coupon)`);
   }
-  return { allocation, problems, taxByItem: Boolean(plan), taxByRate: plan?.byRate ?? null };
+  const why = taxIncluded ? 'the prices already include the tax' : unread ? "the items don't add up to the subtotal" : null;
+  return { allocation, problems, taxByItem: Boolean(plan), taxByRate: plan?.byRate ?? null, taxExplained: describeTax(receipt, plan, why) };
 }
 
 /**
@@ -471,6 +534,9 @@ export function mergeSmallParts(allocation, minCents, preferCategoryId) {
   }
   return kept.sort((a, b) => b.cents - a.cents);
 }
+
+/** mergeSmallParts with the SPLIT_MIN_CENTS setting: what the worker (receipt.js) and the receipt page's category fix (receipt-fix.js) both use. */
+export const mergeParts = (allocation, preferCategoryId) => mergeSmallParts(allocation, config.splitMinCents, preferCategoryId);
 
 /** Paid in cash: the payment line says so. Card receipts print "Tendered" too, so cash_tendered alone isn't enough. */
 export const paidCash = (receipt) => /\bcash\b(?!\s*back)/.test(String(receipt.payment_method ?? '').toLowerCase());

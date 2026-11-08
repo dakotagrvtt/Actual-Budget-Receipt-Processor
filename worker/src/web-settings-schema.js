@@ -30,6 +30,9 @@ function checkTimeZone(v) {
 const bool = (key, section, label, dflt, help) => ({ key, section, label, type: 'bool', default: dflt, help });
 const number = (key, section, label, dflt, min, max, help, int = false) => ({ key, section, label, type: 'number', default: dflt, min, max, int, help });
 
+// Advanced settings sit under "Advanced" on the Settings tab: tuning that most people never need to touch.
+const adv = (def) => ({ ...def, advanced: true });
+
 export const SETTINGS = [
   // --- Connections ---
   { key: 'ACTUAL_SERVER_URL', section: 'connections', label: 'Actual server address', type: 'url', required: true, default: '', help: 'The same address you open in the browser. For Actual on this same computer: http://host.docker.internal:5006' },
@@ -44,53 +47,54 @@ export const SETTINGS = [
   { key: 'RECEIPTS_REVIEW', section: 'connections', label: 'Needs review folder', type: 'folder', required: true, default: '/Receipts/Needs review', help: 'Where receipts go when a person should look at them.' },
 
   // --- Matching ---
-  { key: 'MATCH_ACCOUNTS', section: 'matching', label: 'Accounts to search', type: 'list', default: '', help: 'Accounts searched for the bank transaction a receipt belongs to (comma-separated names). Empty means all open, on-budget accounts.' },
-  number('MATCH_DAYS', 'matching', 'Days the charge may post after the receipt', '4', 0, 60, 'How many days after the receipt date the bank transaction may post (it may also be dated 1 day before).', true),
-  number('MATCH_NO_DATE_RECENT_DAYS', 'matching', 'Undated receipts: days back that are applied', '14', 0, 3650, 'A receipt with no readable date uses a charge in this many days before the upload; anything that moves money goes to review.', true),
-  number('MATCH_NO_DATE_LOOKBACK_DAYS', 'matching', 'Undated receipts: days back that are listed', '365', 0, 3650, 'A charge found only further back than the days above, up to this many, is listed for review and never applied.', true),
-  number('MATCH_RECHECK_MINUTES', 'matching', 'Minutes between re-checks of a waiting receipt', '60', 1, 10080, 'A receipt often arrives before its bank charge. It stays in the inbox and is checked again this often.', true),
-  number('MATCH_PENDING_WAIT_DAYS', 'matching', 'Days to wait for a pending charge', '2', 0, 60, 'A matching charge the bank has not cleared yet is waited on this many days longer; after that it is applied and reviewed.', true),
-  number('MATCH_TOLERANCE_PERCENT', 'matching', 'Charge may exceed the receipt by (%)', '0', 0, 100, 'Allow the charge to exceed the receipt total by this percent (for example 25 for restaurant tips).'),
-  number('PAYEE_MIN_SCORE', 'matching', 'How well the payee must match (0 to 1)', '0.6', 0, 1, 'How closely the bank payee must match the receipt\'s merchant name. Higher is stricter.'),
-  bool('OVERWRITE_CATEGORIZED', 'matching', 'Change a charge your rules already categorized', 'true', 'If a receipt points to one different category: on switches the charge to the receipt\'s category (only when an item is clearly sure), off sends it to review. Existing splits are never touched.'),
-  bool('SPLIT_TRANSACTIONS', 'matching', 'Split a transaction by category', 'true', 'On splits a transaction by category when a receipt spans several; off uses the largest category only.'),
-  number('SPLIT_MIN_AMOUNT', 'matching', 'Smallest split part (dollars)', '1', 0, 1000, 'Parts smaller than this (one $0.79 item) are folded into the transaction\'s current or largest category.'),
+  { key: 'MATCH_ACCOUNTS', section: 'matching', label: 'Accounts to search', type: 'list', default: '', help: 'Only look for a receipt\'s bank charge in these accounts (names, separated by commas). Empty searches every open account that is in your budget.' },
+  adv(number('MATCH_DAYS', 'matching', 'Days the charge may post after the receipt', '4', 0, 60, 'A bank charge can post a few days after the purchase. Raise this if charges often show up later than that; lower it to avoid matching the wrong charge.', true)),
+  adv(number('MATCH_NO_DATE_RECENT_DAYS', 'matching', 'Undated receipts: days back that are applied', '14', 0, 3650, 'For a receipt with no readable date: how many days before the upload to look for its charge. A match here is doubtful: if the receipt would change the charge\'s category or split it, it goes to review (applied first if Apply then review is on). A receipt that only confirms the category is not reviewed for this.', true)),
+  adv(number('MATCH_NO_DATE_LOOKBACK_DAYS', 'matching', 'Undated receipts: days back that are listed', '365', 0, 3650, 'For a receipt with no readable date: charges further back than the setting above, up to this many days, are only listed for you to check. Nothing is applied.', true)),
+  adv(number('MATCH_NO_DATE_EXTENDED_DAYS', 'matching', 'Undated receipts: days back for a lone exact match', '120', 0, 3650, 'For a receipt with no readable date and no recent charge: once the wait is over, accept an older charge up to this many days back, but only if exactly one charge has the exact amount and a fitting payee. It is always reviewed. 0 turns this off. Must be more than the first undated setting and at most the second.', true)),
+  adv(number('MATCH_RECHECK_MINUTES', 'matching', 'Minutes between re-checks of a waiting receipt', '60', 1, 10080, 'A receipt often arrives before its bank charge. It stays in the Inbox and is checked again this often. Lower notices the charge sooner but does more work.', true)),
+  adv(number('MATCH_PENDING_WAIT_DAYS', 'matching', 'Days to wait for a pending charge', '2', 0, 60, 'A charge the bank has not finished yet (pending) is waited on this many extra days. After that anything that would change the charge, even just adding a note, goes to review (applied first if Apply then review is on).', true)),
+  adv(number('MATCH_TOLERANCE_PERCENT', 'matching', 'Charge may exceed the receipt by (%)', '0', 0, 100, 'Let the bank charge be this much higher than the receipt total, in percent, for example 25 when tips are added after the receipt. 0 means the amounts must match exactly.')),
+  adv(number('PAYEE_MIN_SCORE', 'matching', 'How well the payee must match (0 to 1)', '0.6', 0, 1, 'How closely the bank\'s payee name must look like the store name on the receipt, from 0 (anything) to 1 (identical). Higher is stricter: fewer wrong matches, more receipts in review.')),
+  bool('OVERWRITE_CATEGORIZED', 'matching', 'Change a charge your rules already categorized', 'true', 'When your Actual rules already put a charge in one category and the receipt clearly says another: on changes it, off sends the receipt to review. Charges that are already split are never touched.'),
+  bool('SPLIT_TRANSACTIONS', 'matching', 'Split a transaction by category', 'true', 'On: a charge with items from several categories is split into them. Off: an uncategorized charge goes whole to the biggest category, with the breakdown in a note; a charge that already has a category keeps it and only gets the breakdown note.'),
+  number('SPLIT_MIN_AMOUNT', 'matching', 'Smallest split part (dollars)', '1', 0, 1000, 'Split parts smaller than this many dollars (say one 79-cent item) are folded into the charge\'s main category instead of getting their own line. Raise it for fewer, bigger splits.'),
 
   // --- Categorizing ---
-  { key: 'EXCLUDE_CATEGORY_GROUPS', section: 'categorizing', label: 'Excluded category groups', type: 'list', default: '', help: 'Whole groups receipts never go to (bills, debt, savings), comma-separated. The Categories tab has buttons for this too.' },
-  { key: 'EXCLUDE_CATEGORIES', section: 'categorizing', label: 'Excluded categories', type: 'list', default: '', help: 'Single "Group / Category" labels receipts never go to, comma-separated. The Categories tab has buttons for this too.' },
-  bool('STRIP_DEPARTMENT_PREFIXES', 'categorizing', 'Drop store department codes', 'true', 'Drop codes like "MED-" or "BED-" from item names before categorizing ("MED" reads as medical).'),
-  bool('READ_PLAIN_NAMES', 'categorizing', 'Have the reader write items in plain words', 'false', 'Off by default: in testing it decoded "MED-CHILD PIC" (children\'s books) as "child milk".'),
-  number('CATEGORY_MIN_CONFIDENCE', 'categorizing', 'Confidence needed for a category (0 to 1)', '0.5', 0, 1, 'The top category\'s probability. Items below this are unsure.'),
-  bool('UNSURE_ITEMS_USE_STORE_CATEGORY', 'categorizing', 'Unsure items stay in the store\'s usual category', 'true', 'Items under the confidence bar stay in the store\'s usual category (from your Actual rules, or the transaction\'s) instead of becoming an Uncategorized part.'),
-  number('MOVE_MIN_CONFIDENCE', 'categorizing', 'Confidence needed to move an item out (0 to 1)', '0.6', 0, 1, 'Needed to move an item out of the store\'s usual category. The default is 0.6, or the confidence bar above if that is higher.'),
-  number('MOVE_MIN_MARGIN', 'categorizing', 'Lead needed to move an item out (0 to 1)', '0.2', 0, 1, 'An item\'s category must be ahead of the best other one by at least this much to move out. Stops near ties from moving money.'),
-  bool('RECEIPT_CHECK', 'categorizing', 'Ask which category fits the whole purchase', 'true', 'One extra decider question per receipt (two or more items). A food-court visit can stay one category instead of splitting. Off uses per-item answers only.'),
-  number('RECEIPT_CHECK_MIN_CONFIDENCE', 'categorizing', 'Confidence for the whole-purchase answer (0 to 1)', '0.5', 0, 1, 'How sure the whole-purchase answer must be to override items.'),
-  bool('TAX_BY_ITEM', 'categorizing', 'Spread tax over the taxed items only', 'true', 'When the reader saw which items are taxed, only those pay the tax. Off spreads tax in proportion to the amounts.'),
-  number('TAX_BY_ITEM_MAX_RATE', 'categorizing', 'Highest believable tax rate (0 to 1)', '0.12', 0, 1, 'Tax over the taxed items above this rate is spread in proportion to the amounts instead.'),
+  adv({ key: 'EXCLUDE_CATEGORY_GROUPS', section: 'categorizing', label: 'Excluded category groups', type: 'list', default: '', help: 'Whole groups receipts never go to (bills, debt, savings), comma-separated. The Categories tab has buttons for this too.' }),
+  adv({ key: 'EXCLUDE_CATEGORIES', section: 'categorizing', label: 'Excluded categories', type: 'list', default: '', help: 'Single "Group / Category" labels receipts never go to, comma-separated. The Categories tab has buttons for this too.' }),
+  adv(bool('STRIP_DEPARTMENT_PREFIXES', 'categorizing', 'Drop store department codes', 'true', 'Drop codes like "MED-" or "BED-" from item names before categorizing ("MED" reads as medical).')),
+  adv(bool('READ_PLAIN_NAMES', 'categorizing', 'Have the reader write items in plain words', 'false', 'Ask the reader to rewrite item names in plain words. Off is safer: in testing it turned "MED-CHILD PIC" (children\'s books) into "child milk".')),
+  adv(number('CATEGORY_MIN_CONFIDENCE', 'categorizing', 'Confidence needed for a category (0 to 1)', '0.5', 0, 1, 'How sure the worker must be (0 to 1) before it files an item in a category; less sure items count as unsure. Higher means more unsure items and more reviews.')),
+  adv(bool('UNSURE_ITEMS_USE_STORE_CATEGORY', 'categorizing', 'Unsure items stay in the store\'s usual category', 'true', 'Items under the confidence bar stay in the store\'s usual category (from your Actual rules, or the transaction\'s) instead of becoming an Uncategorized part.')),
+  adv(number('MOVE_MIN_CONFIDENCE', 'categorizing', 'Confidence needed to move an item out (0 to 1)', '0.6', 0, 1, 'How sure the worker must be (0 to 1) to move an item out of the store\'s usual category. If the setting above is higher, that one is used. Higher keeps more items where they are.')),
+  adv(number('MOVE_MIN_MARGIN', 'categorizing', 'Lead needed to move an item out (0 to 1)', '0.2', 0, 1, 'An item\'s best category must lead the runner-up by at least this much (0 to 1) before the item is moved. Higher stops near-ties from moving money.')),
+  adv(bool('RECEIPT_CHECK', 'categorizing', 'Ask which category fits the whole purchase', 'true', 'One extra decider question per receipt (two or more items). A food-court visit can stay one category instead of splitting. Off uses per-item answers only.')),
+  adv(number('RECEIPT_CHECK_MIN_CONFIDENCE', 'categorizing', 'Confidence for the whole-purchase answer (0 to 1)', '0.5', 0, 1, 'How sure the whole-purchase answer must be (0 to 1) to override the per-item answers. Higher means it overrides less often.')),
+  adv(bool('TAX_BY_ITEM', 'categorizing', 'Spread tax over the taxed items only', 'true', 'When the reader saw which items are taxed, only those pay the tax. Off spreads tax in proportion to the amounts.')),
+  adv(number('TAX_BY_ITEM_MAX_RATE', 'categorizing', 'Highest believable tax rate (0 to 1)', '0.12', 0, 1, 'If the tax on the taxed items works out above this rate (0.12 is 12%), the reading looks doubtful, so tax is spread over all items in proportion instead.')),
   bool('APPLY_THEN_REVIEW', 'categorizing', 'Apply the sure part, then review', 'true', 'On: when some items are unsure, still apply the confident part and send the receipt to Needs review. Off: change nothing and send it to review.'),
-  number('HISTORY_DAYS', 'categorizing', 'Days of past purchases to learn from', '365', 1, 3650, 'How far back to look at past purchases at the same store.', true),
-  number('HISTORY_LIMIT', 'categorizing', 'How many past purchases to learn from', '10', 1, 200, 'How many past purchases at the same store the decider sees.', true),
-  bool('SIMILAR_ITEMS', 'categorizing', 'Show similar items from any store', 'true', 'Also show the decider how similar items from any store were filed before. On by default because it tested slightly better.'),
-  number('HOUSEHOLD_EXAMPLES', 'categorizing', 'Household examples per category', '5', 0, 50, 'How many of your newest split notes per category the decider sees with every item. Fewer is faster. 0 sends none.', true),
+  adv(number('HISTORY_DAYS', 'categorizing', 'Days of past purchases to learn from', '365', 1, 3650, 'How many days back the worker looks at your past purchases at the same store to see how you filed them. Longer sees more history.', true)),
+  adv(number('HISTORY_LIMIT', 'categorizing', 'How many past purchases to learn from', '10', 1, 200, 'How many past purchases at the same store it looks at. More gives more context but is slower.', true)),
+  adv(bool('SIMILAR_ITEMS', 'categorizing', 'Show similar items from any store', 'true', 'Also show the decider how similar items from any store were filed before. On by default because it tested slightly better.')),
+  adv(number('HOUSEHOLD_EXAMPLES', 'categorizing', 'Household examples per category', '5', 0, 50, 'How many of your newest split notes per category the decider sees with every item. Fewer is faster. 0 sends none.', true)),
 
   // --- Behaviour ---
-  number('POLL_SECONDS', 'behaviour', 'Seconds between checks', '300', 60, 3600, 'How often the inbox is checked. The "Check for receipts now" button checks right away. At most an hour, so the container is not reported unhealthy.', true),
+  number('POLL_SECONDS', 'behaviour', 'Seconds between checks', '300', 60, 3600, 'How often the Inbox is checked for new receipts. Lower picks them up sooner; "Check for receipts now" checks right away. An hour at most, so Docker does not report the container unhealthy.', true),
   { key: 'TRIGGER_TIMEZONE', section: 'behaviour', label: 'Time zone for this page', type: 'text', check: checkTimeZone, default: 'UTC', help: 'Time zone for times shown on this page, for example America/New_York.' },
-  number('MAX_IMAGE_SIDE', 'behaviour', 'Longest side of a receipt photo (pixels)', '2240', 500, 8000, 'Receipts are downscaled to this many pixels on the long side before the reader sees them.', true),
+  adv(number('MAX_IMAGE_SIDE', 'behaviour', 'Longest side of a receipt photo (pixels)', '2240', 500, 8000, 'Photos are shrunk to this many pixels on the long side before the reader looks at them. Larger can read small print better but is slower.', true)),
 
   // --- Holidays and gift meals ---
-  bool('OCCASIONS', 'holidays', 'Show holidays to the decider', 'true', 'Holidays near the purchase date (Valentine\'s, Easter, Mother\'s and Father\'s Day, Halloween, Thanksgiving, Christmas) are shown to the decider as a gift hint. These are US holidays.'),
-  number('OCCASION_DAYS_BEFORE', 'holidays', 'Days before a holiday that count', '14', 0, 60, 'A purchase up to this many days before a holiday counts as near it.', true),
-  number('OCCASION_DAYS_AFTER', 'holidays', 'Days after a holiday that count', '2', 0, 60, 'A purchase up to this many days after a holiday counts as near it.', true),
-  number('GIFT_MEAL_MIN', 'holidays', 'Restaurant charge that goes to review (dollars)', '50', 0, 100000, 'A restaurant charge over this many dollars goes to review (it may be a gift meal or need splitting). 0 is off.'),
-  { key: 'RESTAURANT_CATEGORY', section: 'holidays', label: 'Restaurants category', type: 'text', default: 'Daily Expenses / Restaurants', help: 'The "Group / Category" label that counts as restaurants for the gift meal check.' },
+  bool('OCCASIONS', 'holidays', 'Show holidays to the decider', 'true', 'Tell the decider when a purchase is near a US holiday (Valentine\'s, Easter, Mother\'s and Father\'s Day, Halloween, Thanksgiving, Christmas), so it can tell gifts from everyday buys.'),
+  adv(number('OCCASION_DAYS_BEFORE', 'holidays', 'Days before a holiday that count', '14', 0, 60, 'How many days before a holiday a purchase still counts as near it.', true)),
+  adv(number('OCCASION_DAYS_AFTER', 'holidays', 'Days after a holiday that count', '2', 0, 60, 'How many days after a holiday a purchase still counts as near it.', true)),
+  number('GIFT_MEAL_MIN', 'holidays', 'Restaurant charge that goes to review (dollars)', '50', 0, 100000, 'A restaurant charge over this many dollars is sent to review, since it may be a gift meal or need splitting. 0 turns this off.'),
+  adv({ key: 'RESTAURANT_CATEGORY', section: 'holidays', label: 'Restaurants category', type: 'text', default: 'Daily Expenses / Restaurants', help: 'The "Group / Category" label that counts as restaurants for the gift meal check.' }),
 
   // --- Keywords and learning ---
-  { key: 'KEYWORD_MODE', section: 'keywords', label: 'Keyword mode', type: 'enum', values: ['off', 'final', 'hint', 'mixed'], default: 'mixed', help: 'mixed (recommended): "always" keywords skip the model, "usually" ones are hints. final: every match skips the model. hint: every match is a hint. off: keywords are ignored.' },
-  number('KEYWORD_HINT_WEIGHT', 'keywords', 'Weight of a "usually" keyword', '20', 1, 1000, 'Multiplies the keyword category\'s probability by this (1 tells the model only; 4 and 20 scored the same in testing).'),
-  { key: 'LEARNING', section: 'keywords', label: 'Learning from your corrections', type: 'enum', values: ['on', 'record', 'off'], default: 'on', help: 'on: learn from category changes you make in Actual and use it. record: learn but do not use it yet (to compare). off: no learning at all.' },
+  adv({ key: 'KEYWORD_MODE', section: 'keywords', label: 'Keyword mode', type: 'enum', values: ['off', 'final', 'hint', 'mixed'], default: 'mixed', help: 'mixed (recommended): "always" keywords skip the model, "usually" ones are hints. final: every match skips the model. hint: every match is a hint. off: keywords are ignored.' }),
+  adv(number('KEYWORD_HINT_WEIGHT', 'keywords', 'Weight of a "usually" keyword', '20', 1, 1000, 'How strongly a "usually" keyword pulls toward its category. Higher is stronger; 1 only tells the model about it (4 and 20 scored the same in testing).')),
+  adv({ key: 'LEARNING', section: 'keywords', label: 'Learning from your corrections', type: 'enum', values: ['on', 'record', 'off'], default: 'on', help: 'on: learn from category changes you make in Actual and use it. record: learn but do not use it yet (to compare). off: no learning at all.' }),
 ];
 
 export const SETTINGS_BY_KEY = new Map(SETTINGS.map((s) => [s.key, s]));

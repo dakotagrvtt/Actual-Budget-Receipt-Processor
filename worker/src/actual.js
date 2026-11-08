@@ -2,7 +2,7 @@
 // find candidate charges and past purchases, and write splits, categories and notes. Used by match.js, receipt.js and index.js.
 import fs from 'node:fs/promises';
 import { api, apiInfo } from './actual-api.js';
-import { config, log } from './config.js';
+import { config, inMatchAccounts, log } from './config.js';
 import { TransientError, isTransient } from './errors.js';
 import { payeeScore } from './payee.js';
 import { dayDiff, isoDay, shiftDay, today as todayIso } from './dates.js';
@@ -127,7 +127,7 @@ export async function* budgetTransactions(start, end, { matchAccounts = false } 
   const [accounts, payees] = await Promise.all([api.getAccounts(), payeeTable()]);
   for (const account of accounts) {
     if (account.closed || account.offbudget) continue;
-    if (matchAccounts && config.match.accounts.length > 0 && !config.match.accounts.includes(account.name)) continue;
+    if (matchAccounts && !inMatchAccounts(account.name)) continue;
     for (const t of await api.getTransactions(account.id, start, end)) {
       const payee = payees.get(t.payee);
       yield { t, account, payeeName: payee?.name ?? null, payeeIsTransfer: payee?.transfer ?? false };
@@ -147,10 +147,10 @@ export function matchWindow(date, anchorDate) {
  * an outflow equal to the receipt total (or larger by up to MATCH_TOLERANCE_PERCENT, for tips),
  * dated from 1 day before to MATCH_DAYS after the receipt date.
  */
-export async function findCandidates(totalCents, window, { includeSplits = false } = {}) {
+export async function findCandidates(totalCents, window, { includeSplits = false, tolerancePercent = config.match.tolerancePercent } = {}) {
   const m = config.match;
   const target = -totalCents; // Actual stores outflows as negative integer cents
-  const tolerance = Math.round((totalCents * m.tolerancePercent) / 100);
+  const tolerance = Math.round((totalCents * tolerancePercent) / 100);
   const candidates = [];
   for await (const { t, account, payeeName, payeeIsTransfer } of budgetTransactions(window.start, window.end, { matchAccounts: true })) {
     if (t.is_child || t.transfer_id) continue;
@@ -286,12 +286,13 @@ export async function itemHistory(excludeId, idToLabel, until = null) {
  * still counts after an earlier near miss.
  */
 const AFTER_FILE_NAME = /^(?:\s*$| \| |: |:\s*$| — items: | #review(?=$|[\s|:]))/;
-export function hasTag(notes, tag) {
+export function tagAt(notes, tag) {
   for (let at = notes.indexOf(tag); at >= 0; at = notes.indexOf(tag, at + 1)) {
-    if (AFTER_FILE_NAME.test(notes.slice(at + tag.length))) return true;
+    if (AFTER_FILE_NAME.test(notes.slice(at + tag.length))) return at;
   }
-  return false;
+  return -1;
 }
+export const hasTag = (notes, tag) => tagAt(notes, tag) >= 0;
 
 /**
  * Every transaction (on-budget, not a split part) dated sinceDate..today whose notes carry `#receipt <filename>`: a receipt
@@ -367,24 +368,81 @@ export const CHANGED_MEANWHILE = 'the transaction changed in Actual while the re
  * outage (TransientError): nothing is written and the receipt is tried again next poll.
  */
 export async function changedMeanwhile(txn) {
-  await step('sync before writing', async () => {
-    if (typeof api.sync === 'function') await api.sync();
-  });
-  let fresh = null;
-  let freshAccount = null;
-  for await (const { t, account } of budgetTransactions(shiftDay(txn.date, -RECHECK_DAYS), shiftDay(txn.date, RECHECK_DAYS))) {
-    if (t.id === txn.id) {
-      fresh = t;
-      freshAccount = account;
-      break;
-    }
-  }
+  await syncNow('sync before writing');
+  const row = await findById(txn.id, txn.date);
   // Closed and off-budget accounts are never read, so a transaction moved there is simply not found. An account outside
   // MATCH_ACCOUNTS is read, but matching would not have offered it.
-  let why = changedSince(txn, fresh);
-  if (!why && config.match.accounts.length > 0 && !config.match.accounts.includes(freshAccount.name)) why = 'its account is not one of MATCH_ACCOUNTS';
+  let why = changedSince(txn, row?.t ?? null);
+  if (!why && !inMatchAccounts(row.account.name)) why = 'its account is not one of MATCH_ACCOUNTS';
   if (why) log(`  ${CHANGED_MEANWHILE} (${why})`);
   return why;
+}
+
+/** Sync with the server (when this API can), so what is read next is current. A sync that can't run is an outage: TransientError. */
+export const syncNow = (what = 'sync') => step(what, async () => {
+  if (typeof api.sync === 'function') await api.sync();
+});
+
+/**
+ * Read one transaction again by id (a month either side of `date`, since a bank can move the date), with its account name:
+ * { t, account, payeeName, payeeIsTransfer }, or null when it is not in an open on-budget account any more.
+ */
+export async function findById(id, date) {
+  for await (const row of budgetTransactions(shiftDay(date, -RECHECK_DAYS), shiftDay(date, RECHECK_DAYS))) {
+    if (row.t.id === id) return row;
+  }
+  return null;
+}
+
+/** What a transaction is as far as the categories go: { category } for one category, { children: [{ amount, category, notes }] } for a split. */
+export const shapeOf = (t) => (t.is_parent
+  ? { children: (t.subtransactions ?? []).map((s) => ({ amount: s.amount, category: s.category ?? null, notes: s.notes ?? '' })) }
+  : { category: t.category ?? null });
+
+const childKey = (c) => JSON.stringify([c.amount, c.category ?? null, c.notes ?? '']);
+/** Is the transaction exactly `want` = { category | children, notes }? (Children in any order.) */
+export function isWritten(t, want) {
+  if (!t || (t.notes ?? '') !== (want.notes ?? '')) return false;
+  if (want.children) {
+    const have = t.is_parent ? (t.subtransactions ?? []) : [];
+    return have.length === want.children.length && [...have.map(childKey)].sort().join('\n') === [...want.children.map(childKey)].sort().join('\n');
+  }
+  return !t.is_parent && (t.subtransactions ?? []).length === 0 && (t.category ?? null) === (want.category ?? null);
+}
+
+/** The write did not leave the transaction as intended, and tidying up did not help either. Nothing more is attempted. */
+export class WriteMismatch extends Error {}
+
+/**
+ * Rewrite a transaction's categories as `want` = { category, notes } (one category) or { children: [{ amount, category, notes }], notes }
+ * (a split), replacing whatever it has now, split or not. `txn` is the transaction as read just before. Then reads it again and
+ * checks it is exactly that. A split is one call carrying the new children (Actual drops the old ones); one category after a split
+ * deletes the children first. If old children are still there after a split call, they are deleted and the check runs again. A transaction that still isn't right throws WriteMismatch (and says so; nothing more is changed). Returns the transaction as it is now.
+ */
+export async function rewrite(txn, want) {
+  const oldKids = (txn.subtransactions ?? []).map((s) => s.id).filter(Boolean);
+  const read = async () => (await findById(txn.id, txn.date))?.t;
+  if (want.children) {
+    // Children missing from the new list are deleted by Actual, so this replaces the split.
+    await api.updateTransaction(txn.id, { category: null, notes: want.notes, subtransactions: want.children });
+  } else {
+    // Never `subtransactions: []` (that leaves an empty parent with a split error): delete the children one by one; deleting the
+    // last one turns the parent into a normal transaction, which then gets its category.
+    for (const id of oldKids) await api.deleteTransaction(id);
+    await api.updateTransaction(txn.id, { category: want.category, notes: want.notes });
+  }
+  let now = await read();
+  if (isWritten(now, want)) return now;
+  if (want.children && txn.is_parent && now) {
+    // Old children are still there (an API that adds instead of replacing): delete them and look again.
+    const stale = (now.subtransactions ?? []).filter((s) => oldKids.includes(s.id));
+    for (const s of stale) await api.deleteTransaction(s.id);
+    if (stale.length) {
+      now = await read();
+      if (isWritten(now, want)) return now;
+    }
+  }
+  throw new WriteMismatch('Actual did not end up with the categories that were written, so the charge may be half changed: check it in Actual');
 }
 
 /** Give the whole transaction one category. */

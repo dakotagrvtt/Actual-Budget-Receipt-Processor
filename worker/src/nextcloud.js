@@ -83,3 +83,28 @@ export async function readSummary(p) {
     throw err;
   }
 }
+
+/**
+ * Move an already filed receipt to `dest` (never replacing a file: a taken name gets a time stamp in front) and put `summary` next
+ * to it as its .json; the old .json goes. With dest === from the file stays and only the summary is rewritten. Returns the path
+ * it ended up at. A file that is not at `from` any more throws an error with status 404. If only the new .json could not be written,
+ * it throws with `movedTo` (where the file is now) and leaves the old .json alone.
+ */
+export async function refile(from, dest, summary) {
+  const client = davClient();
+  if (!(await client.exists(from))) throw Object.assign(new Error(`${from} is not there`), { status: 404 });
+  let at = from;
+  if (dest !== from) {
+    const other = path.join(path.dirname(dest), `${Date.now()}-${path.basename(dest)}`);
+    at = await moveKeepingBoth(client, from, dest, other);
+  }
+  try {
+    await client.putFileContents(`${at}.json`, JSON.stringify(summary, null, 2), { overwrite: true });
+  } catch (err) {
+    // The old summary stays (it is the only one); the caller learns where the file is now.
+    log(`  moved to ${at}, but could not write ${path.basename(at)}.json: ${err.message}`);
+    throw Object.assign(new Error(`${path.basename(at)}.json could not be written: ${err.message}`), { movedTo: at });
+  }
+  if (at !== from) await client.deleteFile(`${from}.json`).catch(() => {});
+  return at;
+}

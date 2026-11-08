@@ -1,6 +1,6 @@
 {
   "name": "f-coded-food",
-  "about": "F marks untaxed food (the reader also says taxable: true for it); T lines are taxed.",
+  "about": "F is a code like any other: this receipt prints only a T line, so the F item has no line and carries no tax.",
   "payee": "p-fresh",
   "importedPayee": "FRESHFIELDS MKT #0042",
   "daysAgo": 2,

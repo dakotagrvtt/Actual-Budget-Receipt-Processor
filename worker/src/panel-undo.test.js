@@ -11,7 +11,7 @@ import { loadKeywords } from './keywords.js';
 import { loadCategoryNotes } from './category-notes.js';
 import { loadPrivate } from './private-words.js';
 import { SCRIPT, compareValues, rowVisible } from './panel-script.js';
-import { CSP, escape, resultKey } from './panel-pages.js';
+import { CSP } from './panel-pages.js';
 import { signUndo } from './panel-actions.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'panel-undo-test-'));
@@ -281,7 +281,8 @@ test('the script runs against a tiny fake page: sorts on header click (toggling)
   const doc = {
     getElementById: () => target,
     createElement: () => ({ textContent: '', nodeName: 'SPAN' }),
-    querySelectorAll: (sel) => (sel === '[data-tools]' ? [tools] : [table]),
+    querySelectorAll: (sel) => (sel === '[data-tools]' ? [tools] : sel === 'table[data-sortable]' ? [table] : []),
+    addEventListener() {},
   };
   vm.runInNewContext(SCRIPT, { document: doc, Array, parseFloat, Date, String, isNaN });
   assert.equal(tools.hidden, false, 'filter bar revealed');

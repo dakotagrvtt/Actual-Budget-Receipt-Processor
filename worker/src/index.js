@@ -20,11 +20,13 @@ import { isTransient, TransientError, isFileChanged } from './errors.js';
 import { classifyFailure } from './failure.js';
 import { repairPermissions } from './private-files.js';
 import path from 'node:path';
+import { exclusive, drain } from './session-lock.js';
 import { reportSetupProblem, clearSetupProblem, clearSetupProblemIfQuiet, useAlertFile, beginCycle } from './alert.js';
 
 const MAX_ATTEMPTS = 3; // failed attempts at one receipt before it goes to Needs review
 const MS_PER_SECOND = 1000;
 const MS_PER_MINUTE = 60000;
+const DRAIN_MS = 30000; // how long to wait for a page save before exiting on SIGTERM
 
 let lastUpgradeNote = '';
 let skippedDescribe = false; // the cloud-reader note about category descriptions is logged once per run
@@ -123,12 +125,15 @@ async function describeNewCategories(labels) {
 }
 
 /** The state entry for a receipt whose bank charge hasn't posted yet: it stays in the inbox and is re-checked later. */
-function waitingEntry(entry, waiting) {
+function waitingEntry(entry, waiting, lastmod) {
+  const modified = lastmod ? new Date(lastmod) : null; // kept so the status page can work out the date used (old entries have none)
+  const saved = modified && !Number.isNaN(modified.getTime()) ? modified.toISOString() : entry.lastmod;
   const nextCheck = Math.min(Date.now() + config.match.recheckMinutes * MS_PER_MINUTE, Date.parse(waiting.until));
   return {
     done: false,
     attempts: entry.attempts,
     reading: entry.reading,
+    ...(saved ? { lastmod: saved } : {}),
     waiting: { ...waiting, since: entry.waiting?.since ?? new Date().toISOString(), nextCheck: new Date(nextCheck).toISOString() },
     result: 'waiting for the bank charge',
     at: new Date().toISOString(),
@@ -250,7 +255,7 @@ async function cycle({ recheckAll = false } = {}) {
         } else {
           const out = await processReceipt(item, labels, entry, ctx);
           if (out.waiting) {
-            state[key] = waitingEntry(entry, out.waiting);
+            state[key] = waitingEntry(entry, out.waiting, item.lastmod);
             if (config.dryRun) log('  [dry run] leaving it in the inbox (nothing is moved in dry run anyway)');
           } else {
             if (out.applied) {
@@ -331,7 +336,7 @@ async function main() {
       if (!config.dryRun) await nextcloud.ensureFolders();
       const opts = { recheckAll };
       recheckAll = false;
-      await cycle(opts);
+      await exclusive(() => cycle(opts)); // changes from the receipt page wait for a cycle to end (session-lock.js)
     } catch (err) {
       log(`cycle failed${isTransient(err) ? ' (outage, retrying on the next poll)' : ''}: ${err.message}`);
     }
@@ -349,6 +354,8 @@ async function main() {
     clearTimeout(timer);
     wake = null;
   }
+  // A save from the receipt page may be writing to Actual right now: let it finish (it holds the same lock as a check).
+  if (!(await drain(DRAIN_MS))) log(`a change from the receipt page was still running after ${DRAIN_MS / MS_PER_SECOND}s; stopping anyway`);
   log('stopped');
   process.exit(0);
 }

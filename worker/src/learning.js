@@ -28,6 +28,7 @@ const mode = () => config.learning.mode;
 
 /** Where an item's category came from: model | fallback (store default) | keyword | unsure. */
 const sourceOf = (it) => {
+  if (it.source === 'household') return 'household'; // you chose it on the receipt page (receipt-fix.js)
   if (it.source === 'keyword') return 'keyword';
   if (it.fellBack) return 'fallback';
   if (it.category == null || it.category === UNCATEGORIZED) return 'unsure';
@@ -64,6 +65,26 @@ export function buildSnapshot({ txn, item, receipt, allocation, action, review }
   }));
   return { txnId: txn.id, file: item.basename, date: txn.date, payee: receipt.payee ?? null, store: receipt.store ?? null, amountCents: -txn.amount, action, review: Boolean(review), parts };
 }
+
+/**
+ * The fixes for item categories you changed on the receipt page, shaped like the ones the sweep finds. `entry` is the snapshot
+ * of what the worker proposed (parts with their items); `filed` maps "partIndex:itemIndex" to the label you chose. Items you put
+ * back as the worker had them, or left uncategorized, give none. Every change is a lone, deliberate one (solo).
+ */
+export function pageFixes(entry, filed) {
+  const out = [];
+  entry.parts.forEach((p, g) => p.items.forEach((it, k) => {
+    const to = filed.get(`${g}:${k}`);
+    if (!to || to === UNCATEGORIZED) return;
+    const said = it.merged ? (it.cat === UNCATEGORIZED ? null : it.cat) : p.label;
+    const f = fix(it, p, to, said === null ? 'filled' : 'item', g, true);
+    if (f) out.push(f);
+  }));
+  return out;
+}
+
+/** The lessons for those fixes, marked as made on the page (the sweep keeps them while it still judges the charge). */
+export const pageLessonsOf = (entry, fixes, day) => fixes.map((f) => ({ ...lessonOf(entry, f, day), via: 'page' }));
 
 /** Remember a snapshot so the sweep can look at the charge later. */
 export async function watch(snapshot) {
@@ -261,7 +282,9 @@ export async function sweep({ id2label, now = new Date(), recorded = false }) {
     const doneTxns = new Set(kept.map(({ e }) => e.txnId));
     await memory.updateLessons(({ lessons, forgotten }) => {
       // Your latest word per item replaces the earlier one; an item put back as the worker had it is no longer a lesson.
-      const others = lessons.map((l) => withoutTxns(l, doneTxns)).filter(Boolean);
+      // (A lesson made on the receipt page stays, unless the sweep now finds your word on the same item in Actual.)
+      const again = new Set(fresh.map(({ e, f }) => `${e.txnId}|${normalize(f.item.d)}`));
+      const others = lessons.map((l) => (l.via === 'page' && !again.has(`${l.txnId}|${normalize(l.item)}`) ? l : withoutTxns(l, doneTxns))).filter(Boolean);
       // A charge is re-judged on every sweep while it is watched: the same word on the same item keeps the day it was first learned.
       const firstSeen = (l) => lessons.filter((p) => p.learnedAt && p.item === l.item && p.filed === l.filed && (p.txnIds ?? [p.txnId]).includes(l.txnId)).map((p) => p.learnedAt).sort()[0];
       const mine = fresh.map(({ e, f }) => { const l = lessonOf(e, f, isoDay(now)); const was = firstSeen(l); return was && was < l.learnedAt ? { ...l, learnedAt: was } : l; }).filter((l) => !isForgotten(forgotten, l));

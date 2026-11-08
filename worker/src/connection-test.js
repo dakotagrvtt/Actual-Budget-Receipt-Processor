@@ -4,7 +4,7 @@
 // init is a process-wide singleton the running check may be using, so it is not called here. Messages never contain a password.
 
 // The webdav package is loaded only when a Nextcloud test runs (the tests of the pages never need it).
-export const TEST_TIMEOUT_MS = 15000;
+const TEST_TIMEOUT_MS = 15000;
 const LOGOUT_TIMEOUT_MS = 3000;
 export class ConnectionTestError extends Error {}
 
@@ -28,7 +28,7 @@ async function logout(serverURL, token, fetchFn) {
 }
 
 /** Log in to the Actual server with the candidate address and password, the way @actual-app/api does. Throws ConnectionTestError. */
-export async function testActual({ serverURL, password }, { fetchFn = fetch } = {}) {
+async function testActual({ serverURL, password }, { fetchFn = fetch } = {}) {
   let res;
   try {
     res = await fetchFn(`${serverURL}/account/login`, {
@@ -56,7 +56,7 @@ export async function testActual({ serverURL, password }, { fetchFn = fetch } = 
 }
 
 /** List the inbox with the candidate address, user and app password. Throws ConnectionTestError. */
-export async function testNextcloud({ url, user, password, inbox }, { createClientFn } = {}) {
+async function testNextcloud({ url, user, password, inbox }, { createClientFn } = {}) {
   try {
     const make = createClientFn ?? (await import('webdav')).createClient;
     const client = make(`${url}/remote.php/dav/files/${encodeURIComponent(user)}`, { username: user, password });

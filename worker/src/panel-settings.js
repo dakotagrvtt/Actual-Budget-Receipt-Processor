@@ -3,13 +3,11 @@
 // A change takes effect at the start of the next check (the worker reloads its config then); nothing here touches the running config.
 import crypto from 'node:crypto';
 import { reloadStatus } from './config.js';
-import { PanelError, offerUndo, checkUndo, categoriesData } from './panel-actions.js';
+import { PanelError, offerUndo, checkUndo, categoriesData, UNDO_WINDOW_MS } from './panel-actions.js';
 import { SECTIONS, SETTINGS, SETTINGS_BY_KEY, SettingError, ENV_ONLY_NOTE, normalizeValue } from './web-settings-schema.js';
 import { loadOverrides, effectiveSetting, exclusionRules, checkChanges, checkPairs, changeOverrides, restoreOverrides, resetAllOverrides, restoreAllOverrides, DamagedSettingsError } from './web-settings.js';
 import { testChanged, ConnectionTestError } from './connection-test.js';
 
-const MS_PER_MINUTE = 60000;
-const UNDO_MINUTES = 15;
 const MAX_REMEMBERED = 20;
 /** Stand-ins for the network in tests: { fetchFn, createClientFn }. */
 export const testDeps = {};
@@ -23,7 +21,7 @@ const FORM_EXTRAS = new Set(['section', 'anyway', 'confirm', 'reset']);
 const remembered = new Map();
 function remember(entry) {
   const now = Date.now();
-  for (const [id, e] of remembered) if (now - e.at > UNDO_MINUTES * MS_PER_MINUTE) remembered.delete(id);
+  for (const [id, e] of remembered) if (now - e.at > UNDO_WINDOW_MS) remembered.delete(id);
   while (remembered.size >= MAX_REMEMBERED) remembered.delete(remembered.keys().next().value);
   const id = crypto.randomBytes(8).toString('hex');
   remembered.set(id, { ...entry, at: now });
@@ -40,6 +38,11 @@ async function guarded(change) {
     if (/^file is locked/.test(err.message)) throw new PanelError('The settings file is busy. Try again in a moment.');
     throw err;
   }
+}
+
+/** Nothing can be saved while the settings file is damaged. */
+function refuseIfDamaged(overrides) {
+  if (overrides.damaged) throw new DamagedSettingsError(DAMAGED);
 }
 
 function refuseUnknownKeys(form) {
@@ -68,7 +71,7 @@ export function saveSettings(form, out) {
   return guarded(async () => {
     refuseUnknownKeys(form);
     const overrides = loadOverrides();
-    if (overrides.damaged) throw new DamagedSettingsError(DAMAGED);
+    refuseIfDamaged(overrides);
     const typed = {};
     const retyped = []; // secrets typed in this request, even when equal to the current one
     for (const def of SETTINGS) {
@@ -106,7 +109,7 @@ export function resetSetting(form, out) {
   return guarded(async () => {
     const key = keyFrom(form.get('reset'));
     const overrides = loadOverrides();
-    if (overrides.damaged) throw new DamagedSettingsError(DAMAGED);
+    refuseIfDamaged(overrides);
     if (!Object.hasOwn(overrides.values, key)) return `${SETTINGS_BY_KEY.get(key).label} already uses the .env value.`;
     const before = await changeOverrides({ [key]: null });
     offerSettingsUndo(out, 'undo-settings', { kind: 'keys', before, wrote: { [key]: null } });
@@ -131,9 +134,9 @@ async function undoFromMemory(route, form) {
   checkUndo(route, form);
   const entry = remembered.get(form.get('id') ?? '');
   remembered.delete(form.get('id') ?? ''); // one use
-  if (!entry || Date.now() - entry.at > UNDO_MINUTES * MS_PER_MINUTE) return 'That Undo has expired (it is kept for 15 minutes while the worker runs), so nothing was changed.';
+  if (!entry || Date.now() - entry.at > UNDO_WINDOW_MS) return 'That Undo has expired (it is kept for 15 minutes while the worker runs), so nothing was changed.';
   const { skipped } = await guarded(async () => {
-    if (loadOverrides().damaged) throw new DamagedSettingsError(DAMAGED);
+    refuseIfDamaged(loadOverrides());
     return entry.kind === 'all' ? restoreAllOverrides(entry.values) : restoreOverrides(entry.before, entry.wrote);
   });
   const total = entry.kind === 'all' ? Object.keys(entry.values).length : Object.keys(entry.before).length;
@@ -150,7 +153,7 @@ export const undoExclude = (form) => undoFromMemory('undo-exclude', form);
 function writeExclusions(key, items, out) {
   return guarded(async () => {
     const overrides = loadOverrides();
-    if (overrides.damaged) throw new DamagedSettingsError(DAMAGED);
+    refuseIfDamaged(overrides);
     const { values } = checkChanges({ [key]: items.join(',') }, overrides);
     const before = await changeOverrides(values);
     offerSettingsUndo(out, 'undo-exclude', { kind: 'keys', before, wrote: values });
@@ -188,7 +191,7 @@ export async function includeCategory(form, out) {
 
 /**
  * The Settings page's data. A secret never gets a `value`: only `isSet`.
- * { sections: [{ id, title, settings: [{ key, label, type, help, default, source, value | isSet, min, max, values }] }], damaged, exists, changedAt, reloadError, ignored }
+ * { sections: [{ id, title, settings: [{ key, label, type, help, default, source, advanced, value | isSet, min, max, values }] }], damaged, exists, changedAt, reloadError, ignored }
  */
 export function settingsData() {
   const overrides = loadOverrides();
@@ -196,7 +199,7 @@ export function settingsData() {
     ...s,
     settings: SETTINGS.filter((d) => d.section === s.id).map((d) => {
       const e = effectiveSetting(d.key, overrides);
-      const shared = { key: d.key, label: d.label, type: d.type, help: d.help, default: d.default, source: e.source, required: Boolean(d.required), min: d.min, max: d.max, int: d.int, values: d.values };
+      const shared = { key: d.key, label: d.label, type: d.type, help: d.help, default: d.default, source: e.source, advanced: Boolean(d.advanced), required: Boolean(d.required), min: d.min, max: d.max, int: d.int, values: d.values };
       return d.type === 'secret' ? { ...shared, isSet: e.value !== '' } : { ...shared, value: e.value };
     }),
   }));

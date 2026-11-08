@@ -170,7 +170,7 @@ test('the schema holds exactly the keys of the Settings tab, none of the .env-on
     assert.ok(!SETTINGS_BY_KEY.has(never), never);
   }
   assert.ok(keys.every((k) => !/(_PATH|_DIR)$/.test(k)));
-  assert.equal(keys.length, 49);
+  assert.equal(keys.length, 50);
   assert.deepEqual([...new Set(SETTINGS.map((s) => s.section))], SECTIONS.map((s) => s.id));
   for (const s of SETTINGS) assert.ok(s.help && s.label && s.type, s.key);
   assert.deepEqual(SETTINGS.filter((s) => s.type === 'secret').map((s) => s.key), ['ACTUAL_PASSWORD', 'ACTUAL_E2E_PASSWORD', 'NEXTCLOUD_APP_PASSWORD']);
@@ -511,10 +511,11 @@ test('the Settings tab: needs the key, has one form per section, the help, the s
   await settings.saveSettings(form({ MATCH_DAYS: '6' }), {});
   const html = await (await call('GET', '/settings')).text();
   assert.match(html, /class="on">Settings<\/a>/);
-  for (const s of SECTIONS) assert.ok(html.includes(`<h2>${s.title}</h2>`), s.title);
-  assert.equal((html.match(/<form method="post" action="settings-save\?key=secret"/g) ?? []).length, SECTIONS.length);
+  const mainSections = SECTIONS.filter((sec) => SETTINGS.some((s) => s.section === sec.id && !s.advanced));
+  for (const s of mainSections) assert.ok(html.includes(`<h2>${s.title}</h2>`), s.title);
+  assert.equal((html.match(/<form method="post" action="settings-save\?key=secret"/g) ?? []).length, mainSections.length + 1, 'one per main section, plus the Advanced one');
   assert.match(html, /name="MATCH_DAYS" id="s-MATCH_DAYS" value="6"/);
-  assert.match(html, /How many days after the receipt date the bank transaction may post/);
+  assert.match(html, /A bank charge can post a few days after the purchase/);
   assert.match(html, /<option value="mixed" selected>mixed<\/option>/);
   assert.match(html, /type="checkbox" name="SPLIT_TRANSACTIONS" id="s-SPLIT_TRANSACTIONS" value="true" checked/);
   assert.match(html, /type="password" name="ACTUAL_PASSWORD"[^>]*value=""/);
@@ -818,4 +819,66 @@ test('./receipts exclude reads the effective exclusions through the worker image
   const run = (oneOff) => spawnSync('bash', ['-c', `env_get() { echo "env-$1"; }\nONE_OFF=(${oneOff})\n${fn}\neffective_excludes\necho "[$EFF_GROUPS|$EFF_SINGLES]"`], { encoding: 'utf8' }).stdout.trim();
   assert.equal(run(`bash ${fake}`), '[G1,G2|]');
   assert.equal(run('false'), '[env-EXCLUDE_CATEGORY_GROUPS|env-EXCLUDE_CATEGORIES]', 'the call failed: .env');
+});
+
+test('MATCH_NO_DATE_EXTENDED_DAYS: refused unless it is past the recent days and within the look-back; .env conflicts turn it off', () => {
+  const none = { values: {} };
+  assert.throws(() => store.checkChanges({ MATCH_NO_DATE_EXTENDED_DAYS: '14' }, none), /must be greater than MATCH_NO_DATE_RECENT_DAYS/);
+  assert.throws(() => store.checkChanges({ MATCH_NO_DATE_EXTENDED_DAYS: '400' }, none), /can't be more than MATCH_NO_DATE_LOOKBACK_DAYS/);
+  assert.throws(() => store.checkChanges({ MATCH_NO_DATE_RECENT_DAYS: '200' }, none), /must be greater than MATCH_NO_DATE_RECENT_DAYS/);
+  assert.doesNotThrow(() => store.checkChanges({ MATCH_NO_DATE_EXTENDED_DAYS: '0' }, none));
+  assert.doesNotThrow(() => store.checkChanges({ MATCH_NO_DATE_EXTENDED_DAYS: '90' }, none));
+  const warns = [];
+  const orig = console.warn;
+  console.warn = (m) => warns.push(m);
+  try {
+    const c = buildConfig({ ...process.env, MATCH_NO_DATE_EXTENDED_DAYS: '10', MATCH_NO_DATE_RECENT_DAYS: '14' });
+    assert.equal(c.match.noDateExtendedDays, 0);
+    buildConfig({ ...process.env, MATCH_NO_DATE_EXTENDED_DAYS: '10', MATCH_NO_DATE_RECENT_DAYS: '14' });
+  } finally {
+    console.warn = orig;
+  }
+  assert.equal(warns.filter((w) => /older-charge match is off/.test(w)).length, 1, 'warned once');
+  assert.equal(buildConfig({ ...process.env, MATCH_NO_DATE_EXTENDED_DAYS: '90' }).match.noDateExtendedDays, 90);
+});
+
+// ---- Main / Advanced ----
+
+test('every schema key is in exactly one place: the main forms or the Advanced section', async () => {
+  const html = await (await call('GET', '/settings')).text();
+  const at = html.indexOf('<details class="how" id="advanced"');
+  assert.ok(at > 0, 'the Advanced section exists');
+  const end = html.indexOf('</details>', at);
+  const main = html.slice(0, at) + html.slice(end);
+  const adv = html.slice(at, end);
+  const named = (part, key) => part.includes(`id="s-${key}"`);
+  for (const s of SETTINGS) {
+    assert.equal(named(adv, s.key), Boolean(s.advanced), `${s.key} in Advanced`);
+    assert.equal(named(main, s.key), !s.advanced, `${s.key} in main`);
+  }
+  assert.ok(SETTINGS.filter((s) => s.section === 'connections').every((s) => !s.advanced), 'all connections are main');
+  assert.ok(SETTINGS.filter((s) => !s.advanced && s.section !== 'connections').length <= 10);
+  assert.match(adv, /name="section" value="advanced"/);
+  assert.doesNotMatch(adv.replace(/<\/?details[^>]*>/g, ''), /<details/);
+});
+
+test('Advanced is closed by default and opens when one of its settings is set on the page, or the notice is about one', async () => {
+  const { settingsPage } = await import('./panel-pages.js');
+  const closed = settingsPage(settings.settingsData(), 'secret');
+  assert.match(closed, /<details class="how" id="advanced"><summary>Advanced settings/);
+  await settings.saveSettings(form({ MATCH_DAYS: '7' }), {});
+  assert.match(settingsPage(settings.settingsData(), 'secret'), /<details class="how" id="advanced" open>/);
+  await settings.resetAllSettings(form({ confirm: 'yes' }), {});
+  assert.match(settingsPage(settings.settingsData(), 'secret', 'Days the charge may post after the receipt: must be a whole number.'), /id="advanced" open>/);
+});
+
+test('saving the main form leaves advanced values alone, and saving Advanced leaves the main ones alone', async () => {
+  await settings.saveSettings(form({ section: 'behaviour', POLL_SECONDS: '600' }), {});
+  await settings.saveSettings(form({ section: 'advanced', MATCH_DAYS: '9', PAYEE_MIN_SCORE: '0.7' }), {});
+  assert.deepEqual(readFile().values, { POLL_SECONDS: '600', MATCH_DAYS: '9', PAYEE_MIN_SCORE: '0.7' });
+  await settings.saveSettings(form({ section: 'behaviour', POLL_SECONDS: '900' }), {});
+  assert.deepEqual(readFile().values, { POLL_SECONDS: '900', MATCH_DAYS: '9', PAYEE_MIN_SCORE: '0.7' });
+  await settings.saveSettings(form({ section: 'advanced', MATCH_DAYS: '5' }), {});
+  assert.deepEqual(readFile().values, { POLL_SECONDS: '900', MATCH_DAYS: '5', PAYEE_MIN_SCORE: '0.7' });
+  await settings.resetAllSettings(form({ confirm: 'yes' }), {});
 });

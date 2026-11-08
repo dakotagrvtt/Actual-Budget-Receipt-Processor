@@ -41,15 +41,51 @@ export function parseCandidates(text) {
 
 /**
  * Pick the purchase date: the first reading (printed text first, then the model's own date) that falls between
- * 400 days before and 1 day after the upload. Returns { date | null, note }.
+ * 400 days before and `slackDays` (1: timezones) after the anchor. Returns { date | null, note }.
  */
-export function resolveDate(receipt, anchorDate) {
+export function resolveDate(receipt, anchorDate, { slackDays = 1 } = {}) {
   const anchor = isoDay(anchorDate);
   const candidates = [...parseCandidates(receipt.date_as_printed), ...(receipt.date ? parseCandidates(receipt.date) : [])];
   for (const c of candidates) {
     const age = dayDiff(anchor, c);
-    if (age >= -1 && age <= 400) return { date: c, note: null };
+    if (age >= -slackDays && age <= 400) return { date: c, note: null };
   }
   if (candidates.length === 0) return { date: null, note: 'no purchase date on the receipt' };
   return { date: null, note: `ignored implausible date "${receipt.date_as_printed ?? receipt.date}"` };
+}
+
+// Known camera/app names only, with a time part: YYYY-MM-DD_HHMMSS, YYYY-MM-DD HH.MM.SS, YYYYMMDD_HHMMSS, at the start
+// or right after IMG_ / IMG- / PXL_ / VID_ / Screenshot_ / Screenshot- / signal- / PHOTO_. A date in a document title
+// ("Order_2026-10-01.pdf", "statement 2020-01-01-2026-11-01.pdf") never counts.
+const TIME = '\\d{2}[.-]?\\d{2}[.-]?\\d{2}';
+const PHOTO_NAME = new RegExp(`^(?:(?:IMG|PXL|VID|Screenshot|signal|PHOTO)[_-])?(?:(\\d{4})-(\\d{2})-(\\d{2})[_ -]${TIME}|(\\d{4})(\\d{2})(\\d{2})_${TIME})`, 'i');
+// A photo is uploaded within about a month of being taken; an older name is more likely something else.
+const PHOTO_NAME_MAX_AGE = 31;
+
+/**
+ * The day a photo was taken, read from its file name when the camera or upload app put it there
+ * (2026-11-05_101530.jpg, IMG_20261105_101530.jpg, PXL_20261105_101530123.jpg, Screenshot_2026-11-05-10-15-30.png).
+ * Only the calendar date (local time, like a printed date). null when there is none, it is not a real date,
+ * it is after the day after `lastmod`, or it is more than 31 days before it.
+ */
+export function photoDateFromName(basename, lastmod, now = new Date()) {
+  const m = PHOTO_NAME.exec(String(basename ?? ''));
+  if (!m) return null;
+  const day = m[1] ? iso(+m[1], +m[2], +m[3]) : iso(+m[4], +m[5], +m[6]);
+  if (!day) return null;
+  const age = dayDiff(isoDay(lastmod ?? now), day);
+  if (age < -1 || age > PHOTO_NAME_MAX_AGE) return null;
+  return day;
+}
+
+/**
+ * The anchor every date check hangs on: the earlier of the file-name photo day and the upload (lastmod) time.
+ * Returns { date: Date, fromName, slackDays, photoDay }. Anchored on the file name (photo taken before the upload day),
+ * a printed date after the photo day is impossible, so no slack; the lastmod anchor keeps 1 day for timezones.
+ */
+export function receiptAnchor(basename, lastmod, now = new Date()) {
+  const modified = lastmod instanceof Date && !Number.isNaN(lastmod.getTime()) ? lastmod : now;
+  const photoDay = photoDateFromName(basename, modified, now);
+  if (photoDay && photoDay < isoDay(modified)) return { date: new Date(`${photoDay}T00:00:00Z`), fromName: true, slackDays: 0, photoDay };
+  return { date: modified, fromName: false, slackDays: photoDay === isoDay(modified) ? 0 : 1, photoDay };
 }

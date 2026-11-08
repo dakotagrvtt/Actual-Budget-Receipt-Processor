@@ -28,8 +28,7 @@ The details behind the [README](../README.md): how a receipt is matched, split a
      as T or A beside the price, or a tax column): yes, no, or unknown when the receipt prints no marks. It copies the mark as
      printed, keeping upper and lower case (`t` and `T` can be different rates). It also copies the receipt's printed tax lines
      (code, rate, the taxed amount if the line prints one, and the amount).
-   - The letter F is deliberately not read as "taxed": at some stores it marks untaxed food. So an F item is left unknown, and one
-     unknown item turns off by-item tax for the whole receipt.
+   - Codes are never interpreted: an F (or any letter) is read like every other code, by the reader's taxed yes/no or by the receipt's own printed tax lines. What a letter means differs by store.
    - First pass: the model answers directly, with thinking off. Letting it think gave the same results at 2.4 times the time
      ([research, section 1](research.md#does-reasoning-help-the-reader)). `LLM_THINKING=true` plus `READER_REASONING_BUDGET=1024`
      in `.env` turns it on.
@@ -85,7 +84,7 @@ The details behind the [README](../README.md): how a receipt is matched, split a
      its taxed amount and all are over. The receipt still goes to review with a note saying so. Items under the subtotal,
      or anything unclear, change nothing.
      Otherwise, and for every reading saved before this existed (they have no marks), tax is spread in proportion to the
-     amounts. The log says when tax was placed by item, or by rate.
+     amounts. The log says when tax was placed by item, or by rate. The receipt's View page shows each item's tax mark after its price and one line under the totals saying how the tax was spread (per rate, over the taxed items, or in proportion with the reason); the worker saves it in the summary as `plan.tax`, and older summaries are explained again from the reading.
    - **One category, same as the transaction's:** nothing changes except a `#receipt` note.
    - **One category, different from the transaction's:** the transaction switches to the receipt's category, but only
      if at least one item is clearly sure about the new one (`MOVE_MIN_CONFIDENCE` and `MOVE_MIN_MARGIN`, see below).
@@ -139,6 +138,38 @@ The worker serves the status page (a small control panel) on port 8095. Every re
 - **Status:** the mode, the time of the last check and the 15 most recent receipts (of the current mode) with their results, plus a
   **Check for receipts now** button. A check started there (or by the webhook or `./receipts run-now`) also re-checks
   receipts waiting for their bank charge.
+  Each receipt shows a plain status (Waiting for the bank charge, Needs your review, Applied: check it in Actual, Done,
+  Preview (dry run), Failed) with the raw result word in small type and one line saying where the file is (Inbox,
+  Needs review or Processed), whether Actual was changed and what to do. The **What the statuses mean** box above the
+  table lists them all. The result filter still works on the raw word.
+- **Fixing item categories on a receipt's page:** when a bank charge was matched, the receipt's page (View) shows a category
+  menu for each item (Actual's spending categories; excluded ones are marked). **Preview** divides the charge again with the
+  same code the worker uses (tax spread per category, tiny parts merged, `SPLIT_MIN_CENTS`) and lists the parts; it reads
+  nothing from Actual. The button that writes is **Save to Actual** for a receipt the worker already applied (any result
+  except `already-applied`, which was never read), or **Apply to Actual** for one in Needs review with nothing applied.
+  - *Saving* re-reads the charge first and refuses unless it is still exactly what the worker (or your last save from the
+    page) wrote: same amount, `#receipt` note, category or split. It then writes the new split (replacing the old one),
+    or one category (removing the split), keeps the `#receipt <file>` note and its other notes, and keeps `#review` unless
+    **Mark as checked** is ticked (it is, for `+review` receipts), which also moves the file to Processed. With splits off the
+    largest part gets the whole charge and the breakdown goes in the note, as in a normal run.
+  - *Applying* refuses if the charge is gone, has another amount, is split, is a transfer, already has a `#receipt` note, is in an
+    account outside `MATCH_ACCOUNTS`, was filed in a hidden or income category, or had its category changed since the match. It
+    overwrites a category your rules set (you chose to apply), writes the note, moves the file to Processed (never over another
+    file) and records the receipt like a normal apply.
+  - The preview carries a token over the receipt's state, your choices and the parts; the save recomputes all of it from the
+    server's own records and refuses a stale preview (a double click, another tab, a changed setting). A save and a poll cycle
+    never overlap: both hold one lock, so a save waits for a running check for up to 20 seconds, otherwise it says the worker is busy
+    and changes nothing.
+  - *Learning:* each item whose category you changed becomes a lesson (the shape the sweep makes, marked `via: page`); an item you put
+    back as the worker had it ends its lesson. The watch is replaced by what the page wrote, so the sweep does not learn your own
+    change again, and a lesson made on the page survives the sweep unless you later change the same item in Actual. `LEARNING=off`
+    writes none of this. A lesson you pressed Forget on is not made again.
+  - *Undo* (15 minutes) puts the charge back as it was (category, notes, children) only if it is still exactly what the page wrote;
+    otherwise it changes nothing. It also restores the receipt's entry and summary, takes back the lessons and the watch, and moves the file back
+    (never over another file). In a dry run the page only previews.
+  - The Actual API call that changes an existing split is not checked against the real package in the tests (they use a fake budget):
+    after every write the charge is read back and compared, and old children that are still there are deleted; if it still isn't
+    right the save stops and says to check the charge in Actual.
 - **Dry run and live:** **Go live...** opens a confirmation page with a box to tick; **Switch to dry run** needs no
   confirmation. The switch is saved in `data/settings.json` and applies at the start of the next check (press
   **Check for receipts now** to make that right away). `./receipts mode dry|live` writes the same file and doesn't
@@ -156,7 +187,14 @@ The worker serves the status page (a small control panel) on port 8095. Every re
 - **Receipt view:** each recent receipt has a **View** link with the photo (up to 3 pages of a PDF, which you can
   also download), what the reader read, the bank charge, how it was filed and why it went to review. The photo is
   fetched from Nextcloud only for receipts the worker has seen, never from a path in the link. Dry-run results are
-  kept for this in `data/dry-summaries/` (the newest 200).
+  kept for this in `data/dry-summaries/` (the newest 200). The page shows the photo beside the reading and decision on
+  a wide screen, and starts with a **What to do** box that says in plain words what happened in Actual and what to do
+  next. **Previous / Next** (also the left and right arrow keys, except while typing in a field) and the jump menu
+  walk through the same 15 receipts as the list, in the order they had when you pressed **View**: the list's result
+  filter, text filter and sort are added to the View links by the page's script and the server works out the order
+  from them (without JavaScript there is no filter on the list, so the default newest-first order is used). **Back to the list** restores them and scrolls to the receipt. **Try again** is on this page
+  too, under the same rules as in the list; after it succeeds you land on the next receipt. The page ends with a
+  collapsible **How this page works**.
 - **Undo:** removing a keyword, a private word or place, marking something "Not a name/place", or saving over a
   category description shows an **Undo** button in the notice. It puts back exactly what was there, including a
   keyword's original date and source. Only the last change can be undone, within 15 minutes. A description that has
@@ -172,7 +210,11 @@ The worker serves the status page (a small control panel) on port 8095. Every re
   section at the bottom has **Include again**. These write `EXCLUDE_CATEGORY_GROUPS` and `EXCLUDE_CATEGORIES` as
   settings of the Settings tab (below), with **Undo**.
 - **Settings:** the same settings as in `.env`, grouped as in `.env.example` (Connections, Matching, Categorizing,
-  Behaviour, Holidays and gift meals, Keywords and learning), each with its help line, its current value and where
+  Behaviour, Holidays and gift meals). The everyday ones are shown first: Connections (Actual, Nextcloud and the three
+  folders), `MATCH_ACCOUNTS`, `OVERWRITE_CATEGORIZED`, `SPLIT_TRANSACTIONS`, `SPLIT_MIN_AMOUNT`, `APPLY_THEN_REVIEW`,
+  `POLL_SECONDS`, `TRIGGER_TIMEZONE`, `OCCASIONS` and `GIFT_MEAL_MIN`. The tuning ones (match windows and tolerances,
+  confidence bars, the **Keywords and learning** section, history) sit under a closed **Advanced settings** section that opens by itself when one of its
+  settings is set on the page. Saving one form never touches the other's values. Each with its help line, its current value and where
   that comes from. A value saved on the page goes into `data/web-settings.json` (a JSON object of `.env`-style
   strings, mode 600) and wins over `.env`; **Use the .env value** removes one, **Reset all to .env** all of them. The
   worker re-reads `.env` plus that file at the start of every check and updates its settings in place, so no restart
@@ -208,11 +250,24 @@ instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`
 
 - **Dates.** The reader copies the purchase date as printed, and the worker parses it (US month/day; day/month only
   when the first number can't be a month). Return-by dates, future dates, and dates more than 400 days before the
-  upload are ignored.
+  upload are ignored. When the file name starts with a camera or app stamp that has a time
+  (`2026-11-05_101530.jpg`, `2026-11-05 10.15.30.jpg`, `20261105_101530.jpg`, or that after `IMG_`, `IMG-`, `PXL_`, `VID_`,
+  `Screenshot_`, `Screenshot-`, `signal-` or `PHOTO_`) and the day is within 31 days before the upload, the earlier of that
+  day and the upload time is the reference, and a printed date after the photo day is ignored as a misread. Other names
+  (`Order_2026-10-01.pdf`, a statement's date range) are never used. The receipt page shows "Purchase date used" (what the
+  worker settled on, or why there is none) next to the "Printed date".
 - **No readable date.** The worker looks for the charge in the `MATCH_NO_DATE_RECENT_DAYS` (14) days before the
   upload. A match there is used, and anything that moves money is reviewed. If the only match is older (up to
   `MATCH_NO_DATE_LOOKBACK_DAYS`, 365), nothing is applied: the review JSON names that charge so you can check it.
   When uploading a backlog of old receipts, raise `MATCH_NO_DATE_RECENT_DAYS` for that batch.
+  Exception: when the recent days hold no charge at all and the wait for the real charge is over (`MATCH_DAYS` + 1 days
+  after the upload), the worker also searches back `MATCH_NO_DATE_EXTENDED_DAYS` (120, 0 = off; it must be more than
+  `MATCH_NO_DATE_RECENT_DAYS` and at most `MATCH_NO_DATE_LOOKBACK_DAYS`, otherwise the Settings page refuses it and a
+  conflicting `.env` turns it off with a warning). It is skipped if any charge of that amount (tip allowance included)
+  shows up from the recent window through the end of the normal search window. Exactly one exact-amount charge must have
+  a payee that fits the store, and no other candidate (tip-sized ones included) may have a fitting payee. The match is
+  applied but always tagged `#review` and filed in Needs review, even when it only confirms a category.
+  The status page shows the older-charge hint on a waiting receipt.
 - **Store names.** Store names can also match through clues on the receipt, such as `target.com`, when the logo is
   cut off. Only website/email domains and multi-word business names count as clues, never a city, and a clue scores
   lower than the store name. History is looked up by the bank's payee name.
@@ -324,7 +379,7 @@ instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`
 - **No GPU.** Setup notices and sets `LLM_GPU_LAYERS=0`, `DECIDER_GPU_LAYERS=0` and `compose.cpu.yaml` in `.env`, so
   both models run on the CPU (slower, but receipts aren't urgent). If it later finds a GPU, it offers to undo that.
 - **Reprocess a receipt:** for a live receipt in `Needs review` that changed nothing in Actual, press **Try again** on
-  the status page. Otherwise undo the change in Actual (see above), delete the file from `Needs review` and upload
+  the status page. Otherwise undo the change in Actual (restore the category or remove the split, and remove the `#receipt` note), delete the file from `Needs review` and upload
   the receipt again. Don't move it back by hand: the worker remembers each file by its name and version, so a moved
   file may be skipped, while a new upload is a new receipt.
 

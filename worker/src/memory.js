@@ -107,6 +107,17 @@ export const recordMarks = ({ confirmed = [], corrected = {}, clear = [] }) =>
     return { confirmed: [...new Set(sure)].slice(-MARKS_MAX), corrected: fixed };
   });
 
+/** Put one charge's marks back as they were ({ confirmed: boolean, corrected: keys | null }), after an Undo from the receipt page. */
+export const restoreMarks = (txnId, was) =>
+  update('marks.json', {}, (j) => {
+    const confirmed = (Array.isArray(j.confirmed) ? j.confirmed : []).filter((id) => id !== txnId);
+    const corrected = { ...(j.corrected && typeof j.corrected === 'object' && !Array.isArray(j.corrected) ? j.corrected : {}) };
+    delete corrected[txnId];
+    if (was.confirmed) confirmed.push(txnId);
+    if (was.corrected) corrected[txnId] = was.corrected;
+    return { confirmed, corrected };
+  });
+
 /**
  * What provenance needs (actual.js): the watched snapshots by transaction id, the ids you confirmed (removed #review
  * without a change), and `corrected`: ids where you changed something, with the parts' keys. A damaged file reads as empty
@@ -140,6 +151,29 @@ export const updateLessons = (fn) =>
     const out = fn({ lessons: Array.isArray(j.lessons) ? j.lessons : [], forgotten: Array.isArray(j.forgotten) ? j.forgotten : [] });
     return { lessons: out.lessons, forgotten: out.forgotten.slice(-FORGOTTEN_MAX) };
   });
+
+/**
+ * Lessons from category changes made on the receipt page. `items` = the items (names) judged for this charge: whatever lesson the
+ * page made earlier for them is replaced by `add` (an item put back as the worker had it ends with none). A lesson you forgot on the
+ * Learned page is not made again. Returns { added, removed } (the lessons now there / no longer there), for the page's Undo.
+ */
+export async function recordPageLessons({ txnId, items, add }) {
+  const norm = new Set(items.map((i) => String(i).toLowerCase()));
+  let added = [];
+  let removed = [];
+  await updateLessons(({ lessons, forgotten }) => {
+    removed = lessons.filter((l) => l.via === 'page' && l.txnId === txnId && norm.has(String(l.item).toLowerCase()));
+    added = add.filter((l) => !forgotten.some((f) => f.txnId === l.txnId && String(f.item).toLowerCase() === String(l.item).toLowerCase()));
+    return { lessons: [...lessons.filter((l) => !removed.includes(l)), ...added], forgotten };
+  });
+  return { added, removed };
+}
+
+/** Take back what recordPageLessons did: the lessons it added go (by id), the ones it replaced come back. */
+export async function revertPageLessons({ added, removed }) {
+  const ids = new Set(added.map((l) => l.id));
+  await updateLessons(({ lessons, forgotten }) => ({ lessons: [...lessons.filter((l) => !ids.has(l.id)), ...removed.filter((r) => !lessons.some((l) => l.id === r.id && !ids.has(l.id)))], forgotten }));
+}
 
 export const loadSweepInfo = () => readJson('sweep.json', {});
 export const saveSweepInfo = (info) => update('sweep.json', {}, () => info);

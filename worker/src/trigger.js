@@ -9,8 +9,9 @@
 //   POST /run?key=TOKEN            webhook: check the inbox now (Nextcloud webhook, phone shortcut, curl)
 //   POST /mode, /category-save, /keyword-add, /keyword-remove, /retry    the page's buttons (forms), then a 303 back with a notice
 //   POST /category-exclude, /category-include    the Categories tab's Exclude / Include again buttons
+//   POST /receipt-fix, /undo-receipt-fix   fix a receipt's item categories from its page (Save / Apply to Actual) and undo that
 //   POST /undo-keyword, -category, -word, -notname, -notname-mark, -place, -notplace, -notplace-mark, -settings, -exclude    the Undo button in a notice
-//   GET  /receipt?id=STATEKEY      one receipt: photo, what was read, the decision;  GET /receipt-photo?id=…[&page=n][&raw=1] the picture
+//   GET  /receipt?id=STATEKEY[&result=&q=&sort=&dir=]  one receipt: photo, what was read, the decision, Previous / Next in the list's order;  GET /receipt-photo?id=…[&page=n][&raw=1] the picture
 // The key can also be sent as an "Authorization: Bearer TOKEN" or "X-Trigger-Key: TOKEN" header.
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
@@ -28,6 +29,7 @@ import * as settings from './panel-settings.js';
 import { loadOverrides } from './web-settings.js';
 import * as pages from './panel-pages.js';
 import * as receipts from './panel-receipt.js';
+import * as fix from './receipt-fix.js';
 
 const PORT = 8095;
 const MAX_BODY = 64 * 1024; // the largest form the page legitimately sends is a few KB
@@ -53,24 +55,28 @@ async function readForm(req, limit = MAX_BODY) {
   return size > limit ? null : new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
 }
 
-/** What the status page shows: the mode in force, the mode waiting to start, the heartbeat and the recent receipts. */
-async function statusData() {
-  let heartbeat = 'not yet';
-  let recent = [];
-  let stateError = null;
-  try {
-    heartbeat = new Date(await fs.readFile(config.heartbeatPath, 'utf8')).toLocaleString('en-US', { timeZone: config.trigger.timeZone });
-  } catch { /* first start */ }
+/** The receipts the status page lists (newest first, 15 of them): also what Previous / Next on a receipt's page walk through. */
+async function recentReceipts() {
   try {
     const state = await loadState();
-    recent = Object.entries(state)
+    const recent = Object.entries(state)
       .filter(([k]) => parseStateKey(k).dry === config.dryRun)
       .map(([k, v]) => ({ key: k, file: parseStateKey(k).file.split('/').pop(), ...v }))
       .sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? '')))
       .slice(0, 15);
+    return { recent, stateError: null };
   } catch (err) {
-    stateError = err.message; // shown on the page; never mistaken for "nothing processed yet"
+    return { recent: [], stateError: err.message }; // shown on the page; never mistaken for "nothing processed yet"
   }
+}
+
+/** What the status page shows: the mode in force, the mode waiting to start, the heartbeat and the recent receipts. */
+async function statusData() {
+  let heartbeat = 'not yet';
+  try {
+    heartbeat = new Date(await fs.readFile(config.heartbeatPath, 'utf8')).toLocaleString('en-US', { timeZone: config.trigger.timeZone });
+  } catch { /* first start */ }
+  const { recent, stateError } = await recentReceipts();
   const resolved = resolveDryRun();
   const { dryRun: next, source, settings } = resolved;
   return { dryRun: config.dryRun, pending: next !== config.dryRun ? next : null, settings: source === 'settings' ? settings : null, envNote: envDisagreement(resolved), apiNote: upgradeStatus.note, stateError, heartbeat, recent, alert: await readSetupProblem(), reloadError: reloadStatus.error, settingsDamaged: loadOverrides().damaged };
@@ -81,7 +87,13 @@ const ROUTES = {
   '/category-save': actions.saveCategory,
   '/keyword-add': actions.addKeywordFromForm,
   '/keyword-remove': actions.removeKeywordFromForm,
-  '/retry': (form) => actions.tryAgain(form),
+  '/retry': async (form, out) => {
+    const message = await actions.tryAgain(form);
+    out.retried = true; // only a success moves on to the next receipt
+    return message;
+  },
+  '/receipt-fix': fix.commitFix,
+  '/undo-receipt-fix': fix.undoFix,
   '/lesson-forget': actions.forgetLessonFromForm,
   '/settings-save': settings.saveSettings,
   '/settings-reset': settings.resetSetting,
@@ -120,13 +132,13 @@ const text = (res, code, msg) => res.writeHead(code, { 'Content-Type': 'text/pla
 export const clip = (s, n = 300) => Array.from(String(s)).slice(0, n).join('');
 const MAX_UNDO_LINK = 9000; // keep the redirect link far below Node's 16 KB header limit
 const undoQuery = (undo) => (undo ? `&undo=${encodeURIComponent(undo.route)}&u=${encodeURIComponent(JSON.stringify(undo.fields))}` : '');
-const redirect = (res, where, key, notice, undo) => {
+const redirect = (res, where, key, notice, undo, extra = '') => {
   let q = undoQuery(undo);
   if (q.length > MAX_UNDO_LINK) {
     q = '';
     notice = `${clip(notice, 240)} (Too long to offer Undo.)`;
   }
-  res.writeHead(303, { Location: `${where}?key=${encodeURIComponent(key)}${notice ? `&notice=${encodeURIComponent(clip(notice))}${q}` : ''}` }).end();
+  res.writeHead(303, { Location: `${where}?key=${encodeURIComponent(key)}${extra}${notice ? `&notice=${encodeURIComponent(clip(notice))}${q}` : ''}` }).end();
 };
 
 /** POST /run: the webhook (and the page's "Check for receipts now" form). */
@@ -142,7 +154,7 @@ function handleRun(req, res, key, onTrigger) {
 }
 
 /** POST to one of the ROUTES: run the handler, then redirect back to its page with a notice. */
-async function handleForm(req, res, url, key) {
+async function handleForm(req, res, url, key, deps = {}) {
   const form = await readForm(req);
   if (!form) {
     res.writeHead(413, { 'Content-Type': 'text/plain', 'X-Content-Type-Options': 'nosniff', Connection: 'close' }).end('too large\n');
@@ -151,12 +163,40 @@ async function handleForm(req, res, url, key) {
   let message;
   const out = {};
   try {
-    message = await ROUTES[url.pathname](form, out);
+    message = await ROUTES[url.pathname](form, out, deps);
   } catch (err) {
     if (!(err instanceof actions.PanelError || err instanceof PrivateWordsError || err instanceof MemoryError)) throw err; // these carry a message for the page
     message = err.message;
   }
+  if (url.pathname === '/retry') {
+    const to = retryTarget(form, out);
+    return redirect(res, to.where, key, message, out.undo, to.extra);
+  }
+  if (url.pathname === '/receipt-fix' || url.pathname === '/undo-receipt-fix') {
+    const to = fixTarget(form);
+    return redirect(res, to.where, key, message, out.undo, to.extra);
+  }
   redirect(res, BACK[url.pathname], key, message, out.undo);
+}
+
+/** A redirect to a receipt's page (the list when there is no usable id), keeping the list's filter and sort (cleaned from the form). */
+function receiptTarget(id, form) {
+  const nav = pages.navQuery(pages.cleanNav(form));
+  if (id && id.length <= 2000) return { where: './receipt', extra: `&id=${encodeURIComponent(id)}${nav}` };
+  return { where: './', extra: nav };
+}
+
+/** Where a change made on a receipt's page (and its Undo) sends you back to: that receipt's page. */
+const fixTarget = (form) => receiptTarget(form.get('id'), form);
+
+/**
+ * Where Try again sends you back to. From the list: the list. From a receipt's page (from=receipt): the next receipt after a
+ * success (that one is no longer there), the same receipt after a refusal. The target is never taken from the request:
+ * it is one of two fixed pages, with only a receipt id and the list's filter and sort (cleaned) added to the query.
+ */
+export function retryTarget(form, out) {
+  if (form.get('from') !== 'receipt') return { where: './', extra: '' };
+  return receiptTarget(out.retried ? form.get('next') : form.get('entry'), form);
 }
 
 /** GET pages. Returns false when the path is not a page, so the caller answers 404. */
@@ -179,9 +219,10 @@ async function handlePage(res, url, key, notice, undo, deps) {
     return true;
   }
   if (pathname === '/receipt') {
-    const view = await receipts.receiptView(url.searchParams.get('id'), deps);
-    if (view.code) html(res, pages.layout({ active: 'status', key, body: `<p>${pages.escape(view.message)}</p><p><a href="./?key=${pages.escape(encodeURIComponent(key))}">Back to the list</a></p>` }), view.code);
-    else html(res, pages.receiptPage(view, key, notice));
+    const view = await receipts.receiptView(url.searchParams.get('id'), deps, url.searchParams);
+    const nav = pages.cleanNav(url.searchParams);
+    if (view.code) html(res, pages.layout({ active: 'status', key, body: `<p>${pages.escape(view.message)}</p><p><a href="./?key=${pages.escape(encodeURIComponent(key))}${pages.escape(pages.navQuery(nav))}">Back to the list</a></p>` }), view.code);
+    else html(res, pages.receiptPage(view, key, notice, pages.receiptNav((await recentReceipts()).recent, view.id, nav), undo));
     return true;
   }
   if (pathname === '/receipt-photo') {
@@ -222,7 +263,7 @@ export function makeServer(onTrigger, deps = {}) {
       const notice = url.searchParams.get('notice') || (url.searchParams.get('started') ? 'Checking the inbox now. Refresh in a minute to see the results.' : '');
 
       if (req.method === 'POST' && url.pathname === '/run') return handleRun(req, res, key, onTrigger);
-      if (req.method === 'POST' && ROUTES[url.pathname]) return await handleForm(req, res, url, key);
+      if (req.method === 'POST' && ROUTES[url.pathname]) return await handleForm(req, res, url, key, deps);
       if (req.method === 'GET' && (await handlePage(res, url, key, notice, undo, deps))) return;
       text(res, 404, 'not found');
     } catch (err) {

@@ -27,7 +27,7 @@ const CLOCK_SKEW_MS = MS_PER_MINUTE; // an Undo stamped this far in the future i
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The undo forms a handler may offer: route name (no slash) → used by the page to build the form. */
-export const UNDO_ROUTES = new Set(['undo-keyword', 'undo-category', 'undo-word', 'undo-notname', 'undo-notname-mark', 'undo-place', 'undo-notplace', 'undo-notplace-mark', 'undo-lesson', 'undo-settings', 'undo-exclude']);
+export const UNDO_ROUTES = new Set(['undo-keyword', 'undo-category', 'undo-word', 'undo-notname', 'undo-notname-mark', 'undo-place', 'undo-notplace', 'undo-notplace-mark', 'undo-lesson', 'undo-settings', 'undo-exclude', 'undo-receipt-fix']);
 /** A handler fills out.undo = { route, fields } to say "this can be undone with a POST of these fields". */
 export const offerUndo = (out, route, fields) => {
   if (out) out.undo = { route, fields: signUndo(route, fields) };
@@ -36,6 +36,7 @@ export const offerUndo = (out, route, fields) => {
 // An Undo link is good for 15 minutes and is signed (HMAC with the trigger token) over its route, fields and time,
 // so an old link from the browser history or a hand-made form can't change anything.
 const UNDO_MINUTES = 15;
+export const UNDO_WINDOW_MS = UNDO_MINUTES * MS_PER_MINUTE;
 const canon = (entries) => JSON.stringify([...entries].map(([k, v]) => [k, String(v).replace(/\r\n/g, '\n')]).sort((a, b) => (a[0] + a[1] < b[0] + b[1] ? -1 : 1)));
 const macOf = (route, entries) => crypto.createHmac('sha256', String(config.trigger.token)).update(`${route}\n${canon(entries)}`).digest('hex');
 /** The fields plus a time stamp and signature. */
@@ -51,7 +52,7 @@ export function checkUndo(route, form, now = Date.now()) {
   const got = Buffer.from(mac);
   const ts = Number(form.get('ts'));
   if (got.length !== want.length || !crypto.timingSafeEqual(got, want) || !Number.isFinite(ts)) throw new PanelError('That Undo link isn\'t valid any more. Nothing was changed.');
-  if (now - ts > UNDO_MINUTES * MS_PER_MINUTE || ts - now > CLOCK_SKEW_MS) throw new PanelError(`That Undo link is older than ${UNDO_MINUTES} minutes, so nothing was changed.`);
+  if (now - ts > UNDO_WINDOW_MS || ts - now > CLOCK_SKEW_MS) throw new PanelError(`That Undo link is older than ${UNDO_MINUTES} minutes, so nothing was changed.`);
 }
 /** The undo asked for in a page link (?undo=route&u=json), or null. Only known routes and plain string fields pass. */
 export function undoFromQuery(params) {

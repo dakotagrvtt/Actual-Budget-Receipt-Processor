@@ -517,8 +517,6 @@ export function checkReceipt(r) {
     } else {
       if ('taxable' in it) it.taxable = taxableFlag(it.taxable);
       if ('tax_code' in it) it.tax_code = taxCode(it.tax_code);
-      // F marks untaxed food at some stores, so an F line is never counted as taxed (the tax then falls back to proportional).
-      if (/^f$/i.test(it.tax_code) && it.taxable === true) it.taxable = null;
     }
     if (!config.plainNames) delete it.plain;
     else if (typeof it.plain !== 'string' || !it.plain.trim()) it.plain = it.description;

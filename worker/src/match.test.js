@@ -4,7 +4,8 @@ import test, { mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { config } from './config.js';
 
-const { chargeDeadline, unmatchable, pickMatch } = await import('./match.js');
+const { chargeDeadline, unmatchable, pickMatch, findMatch } = await import('./match.js');
+const { default: api } = await import('@actual-app/api');
 
 const DAY = 86400000;
 const saved = JSON.parse(JSON.stringify(config.match));
@@ -95,4 +96,87 @@ test("pickMatch: the card's last 4 digits break a tie when exactly one account n
   assert.equal(pickMatch({ ...receipt, card_last4: 4242 }, [other, onCard]).kind, 'ambiguous'); // a number is not a usable last 4
   const both = [cand('a', 0.9, { accountName: 'Visa 4242' }), cand('b', 0.9, { accountName: 'Mastercard 4242' })];
   assert.equal(pickMatch({ ...receipt, card_last4: '4242' }, both).kind, 'ambiguous');
+});
+
+// ---- findMatch: an undated receipt and an older, unique exact-amount charge ----
+const fakeBank = (txns) => {
+  mock.method(console, 'log', () => {});
+  mock.method(api, 'getAccounts', async () => [{ id: 'a1', name: 'Checking' }]);
+  mock.method(api, 'getPayees', async () => [{ id: 'p1', name: 'Menards' }, { id: 'p2', name: 'Menards Online' }, { id: 'p3', name: 'Shell' }]);
+  mock.method(api, 'getTransactions', async (id, start, end) => txns.filter((t) => t.date >= start && t.date <= end));
+};
+const old = (id, date, extra = {}) => ({ id, date, amount: -4217, payee: 'p1', ...extra });
+const undated = { merchant: 'Menards', total: 42.17 };
+const anchor = new Date('2026-11-07T10:00:00Z');
+const after = new Date('2026-11-13T00:00:00Z'); // past the undated wait (anchor + MATCH_DAYS + 1)
+const before = new Date('2026-11-08T00:00:00Z');
+
+test('findMatch: an undated receipt with no recent charge uses the only exact-amount charge at the store in the extended days', async () => {
+  fakeBank([old('t1', '2026-10-09'), old('other-store', '2026-09-20', { payee: 'p3' })]);
+  const m = await findMatch(undated, null, anchor, { now: after });
+  assert.equal(m.txn.id, 't1');
+  assert.equal(m.waitable, undefined);
+  assert.deepEqual(m.doubts, []);
+  assert.match(m.matchDoubts.join(), /undated receipt: using the only exact-amount charge at this store in the 120 days before the photo: 2026-10-09/);
+});
+
+test('findMatch: a second plausible charge, a tip-sized difference or the setting at 0 keeps the old behaviour', async () => {
+  fakeBank([old('t1', '2026-10-09'), old('t2', '2026-09-01', { payee: 'p2' })]);
+  let m = await findMatch(undated, null, anchor, { now: after });
+  assert.equal(m.txn, undefined);
+  assert.equal(m.waitable, true);
+  fakeBank([old('t1', '2026-10-09', { amount: -11600 })]);
+  config.match.tolerancePercent = 10;
+  m = await findMatch(undated, null, anchor, { now: after });
+  assert.equal(m.txn, undefined);
+  fakeBank([old('t1', '2026-10-09')]);
+  config.match.noDateExtendedDays = 0;
+  m = await findMatch(undated, null, anchor, { now: after });
+  assert.equal(m.txn, undefined);
+  assert.equal(m.kind, 'older');
+  assert.match(m.problem, /an older charge matches, check it: 2026-10-09/);
+});
+
+test('findMatch: beyond the extended days, or in an account outside MATCH_ACCOUNTS, nothing is used', async () => {
+  fakeBank([old('t1', '2026-06-01')]);
+  assert.equal((await findMatch(undated, null, anchor, { now: after })).txn, undefined);
+  fakeBank([old('t1', '2026-10-09')]);
+  config.match.accounts = ['Savings'];
+  assert.equal((await findMatch(undated, null, anchor, { now: after })).txn, undefined);
+});
+
+test('findMatch: an existing charge of the exact amount in the recent days is the normal undated match', async () => {
+  fakeBank([old('t1', '2026-10-09'), old('t2', '2026-11-03')]);
+  const m = await findMatch(undated, null, anchor, {});
+  assert.equal(m.txn.id, 't2');
+  assert.match(m.doubts.join(), /no readable date/);
+});
+
+test('findMatch: the extended search waits until the undated deadline has passed', async () => {
+  fakeBank([old('t1', '2026-10-09')]);
+  let m = await findMatch(undated, null, anchor, { now: before });
+  assert.equal(m.txn, undefined);
+  assert.equal(m.waitable, true);
+  assert.equal(m.kind, 'older'); // the usual hint
+  m = await findMatch(undated, null, anchor, { now: after });
+  assert.equal(m.txn.id, 't1');
+  m = await findMatch(undated, null, anchor, { replay: true, now: before }); // replay never waits
+  assert.equal(m.txn.id, 't1');
+});
+
+test('findMatch: a charge near the photo date (even one that posted late) blocks the extended match', async () => {
+  fakeBank([old('t1', '2026-10-09'), old('late', '2026-11-10')]);
+  let m = await findMatch(undated, null, anchor, { now: after });
+  assert.equal(m.txn, undefined);
+  fakeBank([old('t1', '2026-10-09'), old('wrong-name', '2026-11-09', { payee: 'p3' })]);
+  m = await findMatch(undated, null, anchor, { now: after });
+  assert.equal(m.txn, undefined);
+});
+
+test('findMatch: a tip-sized rival with a fitting payee blocks the extended match', async () => {
+  config.match.tolerancePercent = 10;
+  fakeBank([old('t1', '2026-10-09'), old('tip', '2026-09-01', { amount: -4630, payee: 'p2' })]);
+  const m = await findMatch(undated, null, anchor, { now: after });
+  assert.equal(m.txn, undefined);
+  assert.equal(m.waitable, true);
 });

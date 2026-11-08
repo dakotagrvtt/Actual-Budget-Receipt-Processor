@@ -7,7 +7,7 @@ import { setRules } from './rules.js';
 
 const { chooseAction, storeConsensus, categorizeReceipt, handleReceipt } = await import('./receipt.js');
 
-const saved = JSON.parse(JSON.stringify({ receiptCheck: config.receiptCheck, receiptCheckMinConfidence: config.receiptCheckMinConfidence, splits: config.splits, match: config.match, ruleFallback: config.ruleFallback, applyThenReview: config.applyThenReview, categoryMinConfidence: config.categoryMinConfidence, moveMinConfidence: config.moveMinConfidence, moveMinMargin: config.moveMinMargin, keywordMode: config.keywordMode, occasions: config.occasions, excludeGroups: config.excludeGroups }));
+const saved = JSON.parse(JSON.stringify({ dryRun: config.dryRun, receiptCheck: config.receiptCheck, receiptCheckMinConfidence: config.receiptCheckMinConfidence, splits: config.splits, match: config.match, ruleFallback: config.ruleFallback, applyThenReview: config.applyThenReview, categoryMinConfidence: config.categoryMinConfidence, moveMinConfidence: config.moveMinConfidence, moveMinMargin: config.moveMinMargin, keywordMode: config.keywordMode, occasions: config.occasions, excludeGroups: config.excludeGroups }));
 afterEach(() => {
   mock.restoreAll();
   Object.assign(config, JSON.parse(JSON.stringify(saved)));
@@ -469,4 +469,30 @@ test('receipt check: moving a whole charge on the receipt answer alone raises a 
   assert.equal(receiptAnswerDoubt('categorize', a, { items: [pulled(), pulled({ receiptSaid: undefined })] }, 'a', FOOD), null);
   assert.equal(receiptAnswerDoubt('categorize', a, { items: [pulled()] }, null, null), null, 'an uncategorized charge is filled, not moved');
   assert.equal(receiptAnswerDoubt('confirm', a, { items: [pulled()] }, 'b', REST), null);
+});
+
+// ---- an undated receipt matched to an older charge ----
+test('handleReceipt: an undated receipt waits for the real charge, then the lone older match is applied and flagged #review even when it only confirms', async () => {
+  mockDecider({ MILK: ['A / One', 0.95] });
+  config.occasions.enabled = false;
+  config.dryRun = true;
+  config.applyThenReview = true;
+  config.match.noDateExtendedDays = 120;
+  mock.method(actualApi, 'getAccounts', async () => [{ id: 'a1', name: 'Checking' }]);
+  mock.method(actualApi, 'getPayees', async () => [{ id: 'p1', name: 'Target' }]);
+  const txns = [{ id: 'old1', date: '2026-10-01', amount: -1000, payee: 'p1', category: 'a' }];
+  mock.method(actualApi, 'getTransactions', async (id, start, end) => txns.filter((t) => t.date >= start && t.date <= end));
+  const read = () => ({ merchant: 'Target', total: 10, subtotal: 10, payment_method: 'visa', items: [{ description: 'MILK', amount: 10 }] });
+  const lastmod = new Date('2026-11-07T10:00:00Z');
+  const item = { basename: 'receipt.jpg', lastmod };
+  const early = await handleReceipt(item, read(), 'test', LABELS, { now: new Date('2026-11-08T00:00:00Z') });
+  assert.equal(early.result, 'waiting');
+  const late = await handleReceipt(item, read(), 'test', LABELS, { now: new Date('2026-11-13T00:00:00Z') });
+  assert.equal(late.result, 'dry-run:confirm+review');
+  assert.equal(late.summary.plan.gapLabel, 'A / One'); // the store's category (cat.fallback): where unread money goes; it is unread money goes to is saved with the plan (the receipt page divides the charge again with it)
+  assert.match(late.summary.problems.join(), /using the only exact-amount charge at this store/);
+  // a charge near the photo date appearing blocks it
+  txns.push({ id: 'new1', date: '2026-11-08', amount: -1000, payee: 'p1', category: 'a' });
+  const near = await handleReceipt(item, read(), 'test', LABELS, { now: new Date('2026-11-13T00:00:00Z') });
+  assert.equal(near.summary.transaction.id, 'new1');
 });

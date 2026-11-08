@@ -7,8 +7,8 @@ import * as actual from './actual.js';
 import { prepareImages } from './image.js';
 import { readReceipt } from './llm.js';
 import { categorizeItems, clearMove, receiptLabels, atLeast } from './categorize.js';
-import { allocate, cents, foldDiscounts, fixTaxGap, partNote, fixCashTotal, ITEMS_NOTE_MAX, mergeSmallParts, money, shortName, UNCATEGORIZED } from './reconcile.js';
-import { isoDay, resolveDate, shiftDay, today } from './dates.js';
+import { allocate, cents, foldDiscounts, fixTaxGap, partNote, fixCashTotal, ITEMS_NOTE_MAX, mergeParts, money, shortName, UNCATEGORIZED } from './reconcile.js';
+import { isoDay, receiptAnchor, resolveDate, shiftDay, today } from './dates.js';
 import { ruleCategoryFor, amountRulesFor } from './rules.js';
 import { harvestAlways } from './keywords.js';
 import { occasionDetails } from './calendar.js';
@@ -275,8 +275,10 @@ export async function handleReceipt(item, receipt, readMode, labels, opts = {}) 
   const now = opts.now ?? new Date();
   const id2label = actual.idToLabel(labels);
   // The purchase date as printed, checked against when the photo was uploaded; undated receipts match by upload time.
-  const anchor = validDate(item.lastmod) ?? now;
-  const { date, note: dateNote } = resolveDate(receipt, anchor);
+  // The anchor is the earlier of the day in the file name (when the camera named it) and the upload time.
+  const { date: anchor, fromName, slackDays, photoDay } = receiptAnchor(item.basename, validDate(item.lastmod) ?? now, now);
+  if (fromName) log(`  photo taken ${photoDay} (from the file name)`);
+  const { date, note: dateNote } = resolveDate(receipt, anchor, { slackDays });
   receipt.date = date;
   const totalNote = fixCashTotal(receipt);
   if (totalNote) log(`  ${totalNote}`);
@@ -298,6 +300,7 @@ export async function handleReceipt(item, receipt, readMode, labels, opts = {}) 
     match = await findMatch(receipt, date, anchor, opts);
     if (match.problem) problems.push(match.problem);
     itemDoubts.push(...(match.doubts ?? []));
+    matchDoubts.push(...(match.matchDoubts ?? []));
   }
   const txn = match?.txn ?? null;
   const current = txn && !txn.is_parent ? txn.category ?? null : null;
@@ -314,6 +317,7 @@ export async function handleReceipt(item, receipt, readMode, labels, opts = {}) 
 
   // 2. Categorize, 3. divide what the bank charged (includes any tip) across the categories.
   let allocation = null;
+  let taxExplained = null;
   let cat = { history: [], ruleLabel: null, fallback: null, categorizedWith: null };
   if (txn && problems.length === 0) {
     cat = await categorizeReceipt(receipt, txn, labels, id2label, currentLabel, itemDoubts, opts);
@@ -325,6 +329,7 @@ export async function handleReceipt(item, receipt, readMode, labels, opts = {}) 
     }
     const result = allocate(receipt, labels, -txn.amount, { gapLabel: cat.fallback ?? UNCATEGORIZED });
     allocation = result.allocation;
+    taxExplained = result.taxExplained ?? null;
     itemDoubts.push(...result.problems); // e.g. items don't add up to the subtotal, or a credit/return line
     if (result.taxByRate) log(`  tax of ${money(cents(receipt.tax))} spread by rate: ${result.taxByRate.map((l) => `${l.code} ${money(l.amount)} over ${money(l.base)}`).join(', ')} (TAX_BY_ITEM)`);
     else if (result.taxByItem) log(`  tax of ${money(cents(receipt.tax))} spread over the taxed items only (TAX_BY_ITEM)`);
@@ -342,7 +347,7 @@ export async function handleReceipt(item, receipt, readMode, labels, opts = {}) 
   const { action, flags } = decision;
   allocation = decision.allocation;
 
-  const summary = buildSummary({ item, readMode, cat, receipt, totalNote, txn, current, currentLabel, id2label, match, allocation, action, problems, flags });
+  const summary = buildSummary({ item, readMode, cat, receipt, totalNote, txn, current, currentLabel, id2label, match, allocation, action, problems, flags, taxExplained });
 
   if (problems.length > 0) {
     log(`  needs review, nothing changed: ${problems.join(' / ')}`);
@@ -384,7 +389,7 @@ function decide({ allocation, receipt, current, currentLabel, problems, itemDoub
     problems.push(...matchDoubts, ...itemDoubts);
     return { allocation, action: null, flags };
   }
-  allocation = mergeSmallParts(allocation, config.splitMinCents, current);
+  allocation = mergeParts(allocation, current);
   let action = chooseAction(allocation, receipt, current, currentLabel, problems);
   // Moving a whole charge on the receipt-level answer alone is a judgment no single item backs: say so, so it gets a look.
   const alone = receiptAnswerDoubt(action, allocation, receipt, current, currentLabel);
@@ -410,7 +415,7 @@ function decide({ allocation, receipt, current, currentLabel, problems, itemDoub
 }
 
 /** The JSON saved next to the filed receipt: what was read, matched, decided and why. */
-function buildSummary({ item, readMode, cat, receipt, totalNote, txn, current, currentLabel, id2label, match, allocation, action, problems, flags }) {
+function buildSummary({ item, readMode, cat, receipt, totalNote, txn, current, currentLabel, id2label, match, allocation, action, problems, flags, taxExplained = null }) {
   return {
     file: item.basename,
     readWith: readMode,
@@ -430,7 +435,7 @@ function buildSummary({ item, readMode, cat, receipt, totalNote, txn, current, c
       : null,
     // Charges that might be this one, when none could be picked (payee mismatch, ambiguous, older undated match).
     candidates: !txn && match?.candidates?.length ? match.candidates.slice(0, CANDIDATES_LISTED).map(describe) : undefined,
-    plan: allocation ? { action, applied: action != null, parts: allocation.map((a) => ({ category: a.label, amount: money(a.cents), items: a.items })) } : null,
+    plan: allocation ? { action, applied: action != null, gapLabel: cat.fallback ?? UNCATEGORIZED, parts: allocation.map((a) => ({ category: a.label, amount: money(a.cents), items: a.items })), ...(taxExplained ? { tax: taxExplained } : {}) } : null,
     problems: [...problems, ...flags],
   };
 }

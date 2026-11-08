@@ -93,13 +93,19 @@ run `./receipts trigger-url` to print it again (`http://localhost:8095` without 
 or paste it as a link into an Actual note. From it you can:
 
 - see recent receipts and what happened to each, and open one to see its photo, what was read, and why it went to
-  review;
+  review. A receipt's page has a **What to do** box, **Previous / Next** (or the arrow keys) and a menu to move through
+  the receipts in the order and filter of the list, **Try again**, and a **How this page works** section;
 - check the inbox right now;
 - switch between dry run and live (it takes effect at the next check);
 - edit your category descriptions and keywords, with an **Undo** button after a removal;
 - exclude category groups or single categories that receipts should never go to (**Categories** tab);
 - change many of the settings below without editing `.env` (**Settings** tab; a value saved there wins over `.env`);
-- press **Try again** on a live receipt that went to review without changing anything in Actual.
+- press **Try again** on a live receipt that went to review without changing anything in Actual;
+- **fix a receipt's item categories** on its page, without going into Actual: pick another category for an item, press
+  **Preview** to see the charge divided again (tax included), then **Save to Actual** (a receipt already applied; the
+  split is rewritten) or **Apply to Actual** (a receipt in Needs review with a matched charge; it also moves the file to
+  Processed). Each item you change is a lesson, as if you had corrected it in Actual. There is an **Undo** for 15
+  minutes, and nothing is written in a dry run.
 
 The status page uses plain HTTP and anyone with the link can use it, so keep it on your own network and keep the link
 private.
@@ -156,7 +162,7 @@ You don't need these day to day. `./receipts help` lists them.
 Every setting lives in `.env`. [`.env.example`](.env.example) lists all of them, each with a short comment and its
 default. Setup fills in the required ones. Run `./receipts restart` after editing `.env`. Many of them (the connections to
 Actual and Nextcloud, matching, categorizing, the check interval, holidays, keywords and learning) can also be changed on
-the status page's **Settings** tab: each shows where its value comes from (`.env`, this page or the default), a
+the status page's **Settings** tab (everyday settings first, tuning ones under **Advanced settings**): each shows where its value comes from (`.env`, this page or the default), a
 **Use the .env value** button undoes an override, and a change applies at the start of the next check, without a
 restart. A value saved there is kept in `data/web-settings.json` and wins over `.env`; `./receipts status` says so when
 that file exists. Models, GPU, providers and API keys, the status page's own key and every file path stay in `.env`. The
@@ -269,7 +275,7 @@ and by a scan from the reader. No automatic scan is perfect, so before switching
   `./receipts restart`. That moves the decider to the processor and frees about 2.5 GB. If another app shares the card,
   also set `MODEL_SLEEP_SECONDS=-1` so the models never give their memory back.
 - **A receipt went to review:** its `.json` says why. If nothing was changed in Actual, fix the cause (a keyword, a
-  payee alias) and press **Try again** on the status page. Otherwise fix the charge in Actual by hand. For a badly read
+  payee alias) and press **Try again** on the status page. If a charge was matched you can instead fix the item categories on the receipt's page and press **Apply to Actual**. Otherwise fix the charge in Actual by hand. For a badly read
   photo, upload a clearer one.
 - **The store name never matches the bank's name:** copy `payee-aliases.example.json` to `data/payee-aliases.json` and
   list the different spellings of each store together.

@@ -1,7 +1,7 @@
 // reconcile.js: splitting a charge over categories (allocate), discount folding, small-part merging, cash totals and note cleanup.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { allocate, foldDiscounts, mergeSmallParts, fixCashTotal, paidCash, stripAnnotations, UNCATEGORIZED } from './reconcile.js';
+import { explainTax, allocate, foldDiscounts, mergeSmallParts, fixCashTotal, paidCash, stripAnnotations, UNCATEGORIZED } from './reconcile.js';
 
 const ids = new Map([['A / One', 'a'], ['B / Two', 'b'], ['C / Three', 'c']]);
 const item = (description, amount, category, extra = {}) => ({ description, amount, category, ...extra });
@@ -478,4 +478,54 @@ test('allocate with tax_lines: the reader\'s taxable flag is ignored when per-ra
   // a code with a zero line is untaxed even when flagged taxed
   const z = { subtotal: 30, tax: 0.8, total: 30.8, tax_lines: [{ code: 'T', amount: 0.8 }, { code: 'N', amount: 0 }], items: [item('MILK', 20, 'A / One', { taxable: true, tax_code: 'N' }), item('SPONGES', 10, 'B / Two', { taxable: false, tax_code: 'T' })] };
   assert.deepEqual(byLabel(allocate(z, ids, 3080).allocation), { 'A / One': 2000, 'B / Two': 1080 });
+});
+
+// ---- explainTax: how the tax was spread, for the receipt page ----
+
+const coded = (description, amount, tax_code, taxable = true) => ({ description, amount, tax_code, taxable });
+
+test('explainTax: two codes ("tF" -> line "t", "BF" -> line "B") give one entry per printed line, with the printed rate', () => {
+  const r = {
+    subtotal: 62.3, tax: 3.66, total: 65.96,
+    tax_lines: [{ code: 't', rate: 5.6, base: 42.33, amount: 2.37 }, { code: 'B', rate: 8.6, base: 14.97, amount: 1.29 }],
+    items: [coded('CEREAL', 42.33, 'tF'), coded('SOAP', 14.97, 'BF'), coded('BREAD', 5, 'N', false)],
+  };
+  const e = explainTax(r);
+  assert.equal(e.how, 'by-rate');
+  assert.deepEqual(e.lines, [{ code: 't', rate: 5.6, base: '42.33', amount: '2.37' }, { code: 'B', rate: 8.6, base: '14.97', amount: '1.29' }]);
+  assert.deepEqual(allocate(r, ids, 6596, {}).taxExplained, e); // allocate stores the same thing
+});
+
+test('explainTax: one rate by item, with the rate worked out when no line prints it', () => {
+  const r = { subtotal: 30, tax: 1, total: 31, items: [coded('MILK', 20, null, false), coded('SOAP', 10, 'A')] };
+  const e = explainTax(r);
+  assert.deepEqual(e, { how: 'by-item', lines: [{ code: 'A', rate: 10, base: '10.00', amount: '1.00' }], reason: null });
+});
+
+test('explainTax: proportional, with the reason when it is known; nothing without tax or with TAX_BY_ITEM off', async () => {
+  const { config } = await import('./config.js');
+  const off = { subtotal: 30, tax: 2.4, total: 32.4, items: [{ description: 'x', amount: 10 }, { description: 'y', amount: 20 }] };
+  assert.deepEqual(explainTax(off), { how: 'proportional', lines: [], reason: 'no tax marks' });
+  assert.equal(explainTax({ ...off, subtotal: 40 }).reason, "the items don't add up to the subtotal");
+  assert.equal(explainTax({ ...off, tax: null }), null);
+  assert.equal(explainTax({ ...off, tax: 0 }), null);
+  config.taxByItem = false;
+  try {
+    assert.equal(explainTax(off), null);
+    assert.equal(allocate(off, ids, 3240).taxExplained, null);
+  } finally {
+    config.taxByItem = true;
+  }
+});
+
+test('allocate: the proportional-tax reason is not "items don\'t add up" just because a credit part was added as a problem', () => {
+  // items add up to the subtotal; the only problem is the refund line's category going negative
+  const receipt = { subtotal: 40, tax: 1.6, total: 41.6, items: [item('x', 30, 'A / One'), item('y', 15, 'B / Two'), item('refund', -5, 'C / Three')] };
+  const r = allocate(receipt, ids, 4160);
+  assert.match(r.problems.join(), /credit/);
+  assert.equal(r.taxExplained.how, 'proportional');
+  assert.equal(r.taxExplained.reason, 'no tax marks');
+  // a real mismatch with the subtotal still says so
+  const off = allocate({ subtotal: 50, tax: 1.6, total: 51.6, items: [item('x', 30, 'A / One'), item('y', 10, 'B / Two')] }, ids, 5160);
+  assert.equal(off.taxExplained.reason, "the items don't add up to the subtotal");
 });

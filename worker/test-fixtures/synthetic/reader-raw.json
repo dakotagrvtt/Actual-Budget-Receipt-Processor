@@ -13,9 +13,9 @@
       "expect": { "total": 35.01, "subtotal": 33.91, "tax": 1.1, "card_last4": "9999", "items.0.amount": 3.49 }
     },
     {
-      "about": "F-coded food the reader called taxed: not counted as taxed",
+      "about": "F-coded item the reader called taxed: an F code is read like any other",
       "raw": { "merchant": "FreshFields Market", "total": 12.82, "items": [{ "description": "CEREAL", "amount": 3.99, "taxable": true, "tax_code": "f" }, { "description": "CLEANER", "amount": 4.99, "taxable": "false", "tax_code": "T" }] },
-      "expect": { "items.0.taxable": null, "items.0.tax_code": "f", "items.1.taxable": false }
+      "expect": { "items.0.taxable": true, "items.0.tax_code": "f", "items.1.taxable": false }
     },
     {
       "about": "tax lines: percent strings, string amounts; negative, unreadable and non-object lines dropped",

@@ -17,6 +17,22 @@ function warn(text) {
   console.warn(`${new Date().toISOString()} ${text}`);
 }
 
+/** Why MATCH_NO_DATE_EXTENDED_DAYS can't work with the other two undated windows, or null when it can (or is 0 = off). */
+export function extendedDaysProblem(recent, lookback, extended) {
+  if (!(extended > 0)) return null;
+  if (extended <= recent) return `MATCH_NO_DATE_EXTENDED_DAYS (${extended}) must be greater than MATCH_NO_DATE_RECENT_DAYS (${recent}), the days it extends past (or 0 to turn it off)`;
+  if (extended > lookback) return `MATCH_NO_DATE_EXTENDED_DAYS (${extended}) can't be more than MATCH_NO_DATE_LOOKBACK_DAYS (${lookback}), the longest look-back (or 0 to turn it off)`;
+  return null;
+}
+// A conflicting .env turns the lone-older-charge match off with a warning instead of stopping the worker.
+function extendedDays() {
+  const extended = num('MATCH_NO_DATE_EXTENDED_DAYS', 120);
+  const problem = extendedDaysProblem(num('MATCH_NO_DATE_RECENT_DAYS', 14), num('MATCH_NO_DATE_LOOKBACK_DAYS', 365), extended);
+  if (!problem) return extended;
+  warn(`${problem}; the older-charge match is off`);
+  return 0;
+}
+
 function required(key) {
   const value = env[key];
   if (!value) throw new Error(`Missing required setting ${key} (see .env.example)`);
@@ -283,6 +299,9 @@ function makeConfig() {
       noDateLookbackDays: num('MATCH_NO_DATE_LOOKBACK_DAYS', 365),
       // Undated receipts: a charge in these days before the upload is applied; an older one is only reported for review.
       noDateRecentDays: num('MATCH_NO_DATE_RECENT_DAYS', 14),
+      // Undated receipts with no charge in the recent days: the only exact-amount charge at the store this many days
+      // further back is used (0 = never).
+      noDateExtendedDays: extendedDays(),
       // A receipt whose charge hasn't posted (or cleared) yet stays in the inbox; check again this often.
       recheckMinutes: num('MATCH_RECHECK_MINUTES', 60),
       // Extra days to wait for a pending charge to clear, after the window for it to post.
@@ -315,8 +334,10 @@ function makeConfig() {
   };
 }
 
-
 export const log = (...args) => console.log(new Date().toISOString(), ...args);
+
+/** Is this account one the worker may match against (MATCH_ACCOUNTS; every account when none is set)? */
+export const inMatchAccounts = (accountName) => config.match.accounts.length === 0 || config.match.accounts.includes(accountName);
 
 const DEFAULT_WEB_SETTINGS_PATH = '/data/web-settings.json';
 

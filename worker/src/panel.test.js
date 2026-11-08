@@ -344,15 +344,15 @@ test('the status page: a Try again button for review results, an undo note for a
     'dry:/Receipts/Inbox/d.jpg@1': { done: true, result: 'dry-run:review', at: '2026-01-04T00:00:00Z' },
   });
   const page = await (await call('GET', '/')).text();
-  assert.equal((page.match(/Try again/g) ?? []).length, 1, 'not for the failed-but-applied one');
-  assert.equal((page.match(/Undo it there first/g) ?? []).length, 2, 'b (split+review) and e (failed, applied); f was filed cleanly');
+  assert.equal((page.match(/>Try again<\/button>/g) ?? []).length, 1, 'not for the failed-but-applied one');
+  assert.equal((page.match(/No Try again: Actual was changed/g) ?? []).length, 2, 'b (split+review) and e (failed, applied); f was filed cleanly');
   assert.match(page, /name="entry" value="\/Receipts\/Inbox\/a.jpg@1"/);
-  assert.match(page, /Undo it there first/);
+  assert.match(page, /No Try again: Actual was changed/);
   assert.doesNotMatch(page, /d\.jpg/);
   config.dryRun = true;
   const dry = await (await call('GET', '/')).text();
   assert.match(dry, /d\.jpg/);
-  assert.doesNotMatch(dry, /Try again/);
+  assert.doesNotMatch(dry, />Try again<\/button>/);
   config.dryRun = false;
 });
 
@@ -421,4 +421,46 @@ test('try again: if the list cannot be updated after the file was moved back, th
   await assert.rejects(actions.tryAgain(form({ entry: k }), { nextcloud: breakIt }), /moved back to the inbox, but the list of receipts could not be updated.*upload the receipt again/);
   fs.rmSync(config.statePath);
   newCycle();
+});
+
+test('status page: a waiting receipt shows the older-charge hint, escaped and short', async () => {
+  const { statusPage } = await import('./panel-pages.js');
+  const reason = 'the receipt has no readable date and no charge in the 14 days before the upload matches; an older charge matches, check it: 2026-02-20 Checking 42.17 "<b>Menards</b>" (payee score 0.90); 2026-09-01 Visa 42.17 "Menards" (payee score 0.80)';
+  const html = statusPage({ heartbeat: 'now', alert: null, recent: [
+    { key: 'k1', file: 'a.jpg', waiting: { nextCheck: '2026-11-08T10:00:00Z', reason }, at: '2026-11-07T10:00:00Z' },
+    { key: 'k2', file: 'b.jpg', waiting: { nextCheck: '2026-11-08T10:00:00Z', reason: 'no transaction of 5.00 found' }, at: '2026-11-07T10:00:00Z' },
+  ] }, 'k');
+  assert.match(html, /Re-checked at [^<]*Older charge matches: 2026-02-20 42\.17, 2026-09-01 42\.17, check it\.</);
+  assert.ok(!html.includes('<b>Menards'));
+  assert.match(html, /b\.jpg<\/td><td data-sort="Waiting for the bank charge" title="waiting"><b>Waiting for the bank charge<\/b>[^]*?Re-checked at [^<]*\.<\/div><\/td>/);
+});
+
+test('status page: a plain label and a where / what changed / what to do line per state, the raw word kept, and the legend', async () => {
+  const { statusPage } = await import('./panel-pages.js');
+  const at = '2026-11-07T10:00:00Z';
+  const recent = [
+    { key: 'k1', file: 'w.jpg', waiting: { nextCheck: '2026-11-08T10:00:00Z', reason: 'no match' }, at },
+    { key: 'k2', file: 'r.jpg', done: true, result: 'review', at },
+    { key: 'k3', file: 's.jpg', done: true, result: 'split+review', applied: { action: 'split' }, at },
+    { key: 'k4', file: 'c.jpg', done: true, result: 'confirm', applied: { action: 'confirm' }, at },
+    { key: 'k5', file: 'd.jpg', done: true, result: 'dry-run:split', at },
+    { key: 'k6', file: 'f.jpg', done: true, result: 'failed', at },
+    { key: 'k7', file: 'e.jpg', error: 'boom', at },
+  ];
+  const html = statusPage({ heartbeat: 'now', alert: null, recent }, 'k');
+  const row = (name) => html.match(new RegExp(`<tr[^>]*>\\s*<td>${name}</td>.*?</tr>`, 's'))[0];
+  assert.match(row('w.jpg'), /<b>Waiting for the bank charge<\/b>.*In the Inbox\. Nothing changed in Actual\. Re-checked at .*Check for receipts now/s);
+  assert.match(row('r.jpg'), /<b>Needs your review<\/b> <span class="muted small">review<\/span>.*In Needs review\. Nothing changed in Actual\..*Try again/s);
+  assert.match(row('s.jpg'), /<b>Applied — check it in Actual<\/b> <span class="muted small">split\+review<\/span>.*Changed in Actual and tagged #review\..*remove the #review tag/s);
+  assert.match(row('c.jpg'), /<b>Done<\/b>.*In Processed\. Actual updated\. Nothing to do\./s);
+  assert.match(row('d.jpg'), /<b>Preview \(dry run\)<\/b> <span class="muted small">dry-run:split<\/span>.*Nothing written, nothing moved\./s);
+  assert.match(row('f.jpg'), /<b>Failed<\/b>.*Nothing changed in Actual\./s);
+  assert.match(row('e.jpg'), /<b>Retrying after an error<\/b>/);
+  assert.match(html, /data-result="split\+review"/, 'the filter still works on the raw word');
+  assert.match(html, /<option value="split\+review">Applied — check it in Actual \(split\+review\)<\/option>/);
+  assert.match(html, /<details class="how"><summary>What the statuses mean<\/summary>/);
+  for (const label of ['Waiting for the bank charge', 'Needs your review', 'Applied — check it in Actual', 'Done', 'Preview (dry run)', 'Failed']) {
+    assert.ok(html.includes(`<dt>${label}</dt>`), label);
+  }
+  assert.doesNotMatch(html, /Undo it there first to try again/);
 });

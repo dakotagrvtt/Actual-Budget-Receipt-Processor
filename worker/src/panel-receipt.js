@@ -3,9 +3,11 @@
 // deps (tests pass stand-ins): nextcloud { statPath, downloadPath, readSummary }, prepare (image.js prepareImages).
 import path from 'node:path/posix';
 import { config } from './config.js';
+import { trimSlashes } from './folders.js';
 import { loadState, parseStateKey } from './state.js';
 import { prepareImages } from './image.js';
 import { readDrySummary } from './dry-summaries.js';
+import { editorFor } from './receipt-fix.js';
 
 const MAX_ID = 2000;
 const MAX_FILE = 40 * 1024 * 1024; // a bigger file is not downloaded at all
@@ -19,10 +21,8 @@ class Unreadable extends Error {}
 class TooBig extends Error {}
 class Busy extends Error {}
 
-/** Folder names as nextcloud.js uses them may lack the leading slash (RECEIPTS_INBOX=Receipts/Inbox). */
-const slash = (f) => `/${String(f).replace(/^\/+|\/+$/g, '')}`;
 /** Is p inside folder (no .. tricks)? */
-const inside = (p, folder) => typeof p === 'string' && !p.split('/').includes('..') && p.startsWith(`${slash(folder)}/`);
+const inside = (p, folder) => typeof p === 'string' && !p.split('/').includes('..') && p.startsWith(`/${trimSlashes(folder)}/`);
 
 /** Where this entry's file is now: its filed path (Processed / Needs review), or its inbox path. null if neither is a place we know. */
 export function locate(id, entry) {
@@ -154,7 +154,7 @@ export async function receiptPhoto(id, { page = 1, raw = false } = {}, deps = {}
 }
 
 /** The data for the detail page, or { code, message } when there is nothing to show. */
-export async function receiptView(id, deps = {}) {
+export async function receiptView(id, deps = {}, query = null) {
   const entry = await entryFor(id);
   if (!entry) return { code: 404, message: NOT_FOUND };
   const file = locate(id, entry);
@@ -179,5 +179,11 @@ export async function receiptView(id, deps = {}) {
   }
   // In dry run nothing is filed; the worker keeps a slim copy of the summary beside its state file.
   if (!view.summary && parseStateKey(id).dry) view.summary = await readDrySummary(id);
+  // Fixing the items' categories from this page (receipt-fix.js): what can be done, and the preview once asked for.
+  try {
+    view.fix = editorFor({ id, entry, summary: view.summary, query });
+  } catch {
+    view.fix = { ok: false, reason: 'the saved summary has an unexpected shape.' }; // untrusted file from Nextcloud: never break the page
+  }
   return view;
 }

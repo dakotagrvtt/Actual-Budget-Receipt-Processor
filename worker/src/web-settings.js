@@ -2,12 +2,10 @@
 // now and where that comes from, check a change by building a trial config, and write changes atomically.
 // The worker itself picks the file up at the start of each check (reloadConfig in config.js).
 import fs from 'node:fs/promises';
-import { config, buildConfig } from './config.js';
+import { config, buildConfig, extendedDaysProblem } from './config.js';
 import { withLock, writeJsonAtomic } from './file-lock.js';
 import { readOverrides } from './web-overrides.js';
 import { SETTINGS_BY_KEY, SettingError, normalizeValue } from './web-settings-schema.js';
-
-export { SettingError };
 
 /** The damaged-file refusal: nothing is written until the file is reset. */
 export class DamagedSettingsError extends Error {}
@@ -28,7 +26,7 @@ export function effectiveSetting(key, overrides = loadOverrides()) {
 }
 
 /** A list setting's current items (EXCLUDE_CATEGORY_GROUPS ...), parsed the way config.js parses it. */
-export const effectiveList = (key, overrides) => effectiveSetting(key, overrides).value.split(',').map((s) => s.trim()).filter(Boolean);
+const effectiveList = (key, overrides) => effectiveSetting(key, overrides).value.split(',').map((s) => s.trim()).filter(Boolean);
 
 /**
  * The category exclusions as the Categories tab should show them: what is saved on the Settings tab if it sets them, else what the
@@ -46,6 +44,12 @@ export function checkChanges(changes, overrides = loadOverrides()) {
     const def = SETTINGS_BY_KEY.get(key);
     if (!def) throw new SettingError(`${key} can't be changed from this page.`);
     values[key] = normalizeValue(def, raw);
+  }
+  if (['MATCH_NO_DATE_RECENT_DAYS', 'MATCH_NO_DATE_LOOKBACK_DAYS', 'MATCH_NO_DATE_EXTENDED_DAYS'].some((k) => k in values)) {
+    const merged = { ...process.env, ...overrides.values, ...values };
+    const n = (k, d) => (Number(merged[k] ?? d));
+    const problem = extendedDaysProblem(n('MATCH_NO_DATE_RECENT_DAYS', 14), n('MATCH_NO_DATE_LOOKBACK_DAYS', 365), n('MATCH_NO_DATE_EXTENDED_DAYS', 120));
+    if (problem) throw new SettingError(`${problem}.`);
   }
   try {
     return { values, candidate: buildConfig({ ...process.env, ...overrides.values, ...values }, { quiet: true }) };

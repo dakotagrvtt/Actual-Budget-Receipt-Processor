@@ -41,6 +41,21 @@ export async function forgetKeys(keys) {
     throw err;
   }
 }
+/**
+ * Change one entry in state.json without touching the others: fn(entry) returns the new entry (undefined removes it). Read and
+ * written inside the write queue. Only for callers that hold the session lock (session-lock.js): the poll cycle keeps the whole
+ * state in memory and would write an older copy over this.
+ */
+export function patchEntry(key, fn) {
+  return queue(async () => {
+    const state = await loadState();
+    const next = fn(state[key]);
+    if (next === undefined) delete state[key];
+    else state[key] = next;
+    await writeState(state);
+    return next;
+  });
+}
 /** Called by the worker right after loadState: keys the file no longer has are already gone, so stop tracking them. */
 export function syncForgotten(state) {
   for (const k of [...forgotten]) if (!(k in state)) forgotten.delete(k);

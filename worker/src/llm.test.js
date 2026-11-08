@@ -2,7 +2,7 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { config } from './config.js';
-import { toNumber, parseJson, checkReceipt, readReceipt, strictSchema, waitForModel, retryPolicy, ReaderAuthError, forgetReaderQuirks, isQuota } from './llm.js';
+import { parseJson, checkReceipt, readReceipt, strictSchema, waitForModel, retryPolicy, ReaderAuthError, forgetReaderQuirks, isQuota } from './llm.js';
 import { isTransient, isSetupProblem, isCounted, isSkip } from './errors.js';
 
 test('parseJson: finds the object in surrounding text and drops <think> blocks', () => {
@@ -92,8 +92,8 @@ test('readReceipt asks for "taxable" only with TAX_BY_ITEM: one rule in the prom
 test('checkReceipt: "tax_code" is the mark as printed (trimmed, case kept), or null; off drops it', () => {
   const r = checkReceipt(good({ items: [{ description: 'a', amount: 1, taxable: true, tax_code: ' a ' }, { description: 'b', amount: 1, taxable: false, tax_code: 5 }, { description: 'c', amount: 1 }] }));
   assert.deepEqual(r.items.map((i) => i.tax_code), ['a', '5', undefined]);
-  // F marks untaxed food at some stores: never counted as taxed
-  assert.equal(checkReceipt(good({ items: [{ description: 'a', amount: 1, taxable: true, tax_code: 'f' }] })).items[0].taxable, null);
+  // F is a code like any other: the reader's yes stays
+  assert.equal(checkReceipt(good({ items: [{ description: 'a', amount: 1, taxable: true, tax_code: 'f' }] })).items[0].taxable, true);
   config.taxByItem = false;
   try {
     assert.equal('tax_code' in checkReceipt(good({ items: [{ description: 'a', amount: 1, tax_code: 'A' }] })).items[0], false);
@@ -102,10 +102,10 @@ test('checkReceipt: "tax_code" is the mark as printed (trimmed, case kept), or n
   }
 });
 
-test('checkReceipt: tax codes keep their case ("t" and "T" are different rates); F in any case is never "taxed"', () => {
+test('checkReceipt: tax codes keep their case ("t" and "T" are different rates)', () => {
   const r = checkReceipt(good({ items: [{ description: 'a', amount: 1, taxable: true, tax_code: 'tF' }, { description: 'b', amount: 1, taxable: true, tax_code: 'T' }, { description: 'c', amount: 1, taxable: true, tax_code: 'f' }] }));
   assert.deepEqual(r.items.map((i) => i.tax_code), ['tF', 'T', 'f']);
-  assert.deepEqual(r.items.map((i) => i.taxable), [true, true, null]);
+  assert.deepEqual(r.items.map((i) => i.taxable), [true, true, true]);
   const l = checkReceipt(good({ tax_lines: [{ code: 't', rate: 5.5, base: 20.96, amount: 1.15 }, { code: 'T', rate: 8, base: 14.97, amount: 1.2 }] })).tax_lines;
   assert.deepEqual(l.map((x) => [x.code, x.base]), [['t', 20.96], ['T', 14.97]]);
 });

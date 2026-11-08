@@ -76,6 +76,14 @@ export async function findMatch(receipt, date, anchor, opts) {
   const m = await matchTransaction(receipt, recent, opts);
   if (m.txn) return { ...m, doubts: ['the receipt has no readable date, so the charge was matched by amount and payee only'] };
   if (m.kind === 'ambiguous') return { ...m, doubts: [], waitable: false };
+  if (m.kind === 'none') {
+    // Only once the real charge has had time to post (replay tests look at old receipts and never wait).
+    const now = opts?.now ?? new Date();
+    if (opts?.replay || now >= chargeDeadline(null, anchor)) {
+      const only = await findOnlyOlderCharge(receipt, day, recent.start, opts);
+      if (only) return only;
+    }
+  }
   const long = actual.matchWindow(null, anchor);
   const older = await matchTransaction(receipt, long, opts);
   if (older.txn || older.kind === 'ambiguous') {
@@ -89,6 +97,33 @@ export async function findMatch(receipt, date, anchor, opts) {
     };
   }
   return { ...m, doubts: [], waitable: true };
+}
+
+/**
+ * An undated receipt with nothing in the recent days, whose wait for the charge is over: look further back
+ * (MATCH_NO_DATE_EXTENDED_DAYS). Refused when anything within the normal tolerance exists from the recent window's start
+ * through the end of the normal search window (a charge near the photo date appeared). Otherwise used only when exactly
+ * one exact-amount charge there has a payee that fits and no other candidate (exact or within MATCH_TOLERANCE_PERCENT)
+ * has a fitting payee. The note is a doubt about the match, so it is returned as matchDoubts (review even for a note).
+ * Returns a match ({ txn, matchDoubts }) or null.
+ */
+async function findOnlyOlderCharge(receipt, day, recentStart, { includeSplits = false } = {}) {
+  const days = config.match.noDateExtendedDays;
+  if (!(days > 0)) return null;
+  const window = { start: shiftDay(day, -days), end: shiftDay(recentStart, -1), ref: day };
+  if (window.start > window.end) return null;
+  const total = cents(receipt.total);
+  const near = { start: recentStart, end: shiftDay(day, config.match.days + 1), ref: day };
+  if ((await actual.findCandidates(total, near, { includeSplits })).length > 0) return null;
+  const found = (await actual.findCandidates(total, window, { includeSplits }))
+    .map((c) => ({ ...c, payeeScore: storeScore(receipt, [c.payeeName, c.imported_payee]) }));
+  const passing = found.filter((c) => c.payeeScore >= config.match.payeeMinScore);
+  const exact = passing.filter((c) => !c.extraCents);
+  if (exact.length !== 1 || passing.length !== 1) return null;
+  const [txn] = exact;
+  const note = `undated receipt: using the only exact-amount charge at this store in the ${days} days before the photo: ${describe(txn)}`;
+  log(`  ${note}`);
+  return { txn, kind: 'older-unique', doubts: [], matchDoubts: [note] };
 }
 
 /**
