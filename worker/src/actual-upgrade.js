@@ -50,7 +50,7 @@ const clearMarker = (dir) => fs.rm(path.join(dir, MARKER), { force: true }).catc
 
 /**
  * The per-cycle check. `startVersion` is the server version the loader saw at startup (it seeds the cache, so the first
- * cycle asks nothing). check() returns the decision and keeps upgradeStatus.note current.
+ * cycle asks nothing). `serverURL` may be a function, so a changed ACTUAL_SERVER_URL is followed. check() returns the decision and keeps upgradeStatus.note current.
  */
 export function createUpgradeWatcher({ setting, serverURL, usingVersion, startVersion = null, failedFor = null, dir, fetchFn = fetchServerVersion, now = Date.now, everyMs = CHECK_EVERY_MS, status = upgradeStatus }) {
   let cached = startVersion ? { version: startVersion, at: now() } : null;
@@ -58,7 +58,7 @@ export function createUpgradeWatcher({ setting, serverURL, usingVersion, startVe
     async check() {
       if (setting !== 'auto') return { action: 'ok', message: '' };
       if (!cached || now() - cached.at >= everyMs) {
-        const version = await fetchFn(serverURL); // null = unreachable; Actual would not open either, so say nothing
+        const version = await fetchFn(typeof serverURL === 'function' ? serverURL() : serverURL); // null = unreachable; Actual would not open either, so say nothing
         if (version) cached = { version, at: now() };
         else if (!cached) return { action: 'ok', message: '' };
       }

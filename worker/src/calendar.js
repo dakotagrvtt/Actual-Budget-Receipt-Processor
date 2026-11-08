@@ -39,9 +39,10 @@ export function usHolidays(y) {
 }
 
 // --- Nextcloud CalDAV (read-only) ---
-const nc = config.nextcloud;
-const auth = () => `Basic ${Buffer.from(`${nc.user}:${nc.password}`).toString('base64')}`;
-let calendars = null; // [{ href, name }], looked up once
+const auth = () => `Basic ${Buffer.from(`${config.nextcloud.user}:${config.nextcloud.password}`).toString('base64')}`;
+// The calendars found ([{ href, name }]), looked up once per Nextcloud address and user (the Settings tab can change them).
+let calendars = null;
+let calendarsFor = '';
 let warned = false;
 
 async function dav(method, url, body, depth) {
@@ -57,6 +58,7 @@ async function dav(method, url, body, depth) {
 const unxml = (s) => s.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n))).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&');
 
 async function listCalendars() {
+  const nc = config.nextcloud;
   const base = `${nc.url}/remote.php/dav/calendars/${encodeURIComponent(nc.user)}/`;
   const xml = await dav('PROPFIND', base, '<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:resourcetype/><d:displayname/><c:supported-calendar-component-set/></d:prop></d:propfind>', '1');
   const out = [];
@@ -64,7 +66,7 @@ async function listCalendars() {
     if (!/<cal:calendar\s*\/>|<c:calendar\s*\/>|calendar xmlns/i.test(resp) || /comp name="VTODO"/i.test(resp) && !/comp name="VEVENT"/i.test(resp)) continue;
     const href = /<d:href>([^<]+)<\/d:href>/i.exec(resp)?.[1];
     if (!href || /\/(inbox|outbox|trashbin)\/?$/.test(href)) continue;
-    out.push({ href: new URL(href, nc.url).toString(), name: unxml(/<d:displayname>([^<]*)<\/d:displayname>/i.exec(resp)?.[1] ?? '') });
+    out.push({ href: new URL(href, config.nextcloud.url).toString(), name: unxml(/<d:displayname>([^<]*)<\/d:displayname>/i.exec(resp)?.[1] ?? '') });
   }
   if (config.occasions.calendars.length) return out.filter((c) => config.occasions.calendars.includes(c.name));
   return out;
@@ -81,7 +83,10 @@ function isOccasion(calName, summary) {
 const icalDate = (d) => `${isoDay(d).replace(/-/g, '')}T000000Z`;
 /** All-day events (recurring ones expanded by the server) between two dates: [{ name, date, source }]. */
 async function calendarEvents(start, end) {
+  const who = `${config.nextcloud.url} ${config.nextcloud.user}`;
+  if (calendarsFor !== who) calendars = null;
   calendars ??= await listCalendars();
+  calendarsFor = who;
   const body = `<?xml version="1.0"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><c:calendar-data><c:expand start="${icalDate(start)}" end="${icalDate(end)}"/></c:calendar-data></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="${icalDate(start)}" end="${icalDate(end)}"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`;
   const events = [];
   for (const cal of calendars) {

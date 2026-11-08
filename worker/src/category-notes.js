@@ -20,6 +20,16 @@ export function loadCategoryNotes() {
   }
 }
 
+/**
+ * Labels receipts may use: everything except EXCLUDE_CATEGORY_GROUPS / EXCLUDE_CATEGORIES (bills, debt, savings).
+ * `rules` is { excludeGroups, excludeCategories }: the config by default; the Categories tab passes what is saved
+ * on the Settings tab, which is not in the config until the next check.
+ */
+export function receiptLabels(labels, rules = config) {
+  // A group name may itself contain " / " ("Bills / Utilities"), so test the label's start, not its first part.
+  return labels.filter((l) => !rules.excludeGroups.some((g) => l.startsWith(`${g} / `)) && !rules.excludeCategories.includes(l));
+}
+
 /** label → description text, whoever wrote it. */
 export function categoryDescriptions() {
   const notes = loadCategoryNotes();
@@ -51,13 +61,17 @@ export function updateNotes(fn) {
 /**
  * Save a description you wrote. The entry stops being a draft (no "auto": true), so the worker never rewrites it.
  * Other fields are kept (previous, basedOn, ...); a plain string stays a plain string.
- * Returns false for a category that isn't in the file.
+ * Returns false for a category that isn't in the file, unless `create` is true (a category Actual has but the file doesn't yet).
  */
-export function saveUserNote(label, description, by = 'you (status page)') {
+export function saveUserNote(label, description, by = 'you (status page)', create = false) {
   const text = String(description).trim();
   if (!text) throw new Error('The description can\'t be empty.');
   return updateNotes((notes) => {
-    if (!Object.hasOwn(notes, label)) return false;
+    if (!Object.hasOwn(notes, label)) {
+      if (!create) return false;
+      notes[label] = { description: text, auto: false, writtenBy: by, written: today() };
+      return true;
+    }
     const cur = notes[label];
     if (typeof cur === 'string') {
       if (cur === text) return false;
@@ -71,7 +85,7 @@ export function saveUserNote(label, description, by = 'you (status page)') {
 
 /**
  * Undo a save: put back the earlier description and its draft flag (and who wrote it, when). A plain-string entry stays
- * a plain string. Returns false for a category that isn't in the file.
+ * a plain string. Returns false for a category that isn't in the file. An empty description puts back "no description yet".
  */
 export function restoreNote(label, { description, auto, writtenBy, written }) {
   return updateNotes((notes) => {

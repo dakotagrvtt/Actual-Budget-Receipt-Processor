@@ -44,8 +44,8 @@ services:
 
   # The decider: the model that picks a category for each item, served by llama.cpp on Vulkan.
   # The worker calls its /v1/systemone endpoint. Any /v1/systemone GGUF model works, set with DECIDER_MODEL
-  # (./receipts download-models fetches it). The default is d1-2B (~2.7 GB VRAM); vLLM d3-flash 9B picks hard items
-  # better (docs/research.md, section 4).
+  # (./receipts download-models fetches it). Setup picks vLLM d3-flash 9B (~6.8 GB VRAM, better on hard
+  # items; docs/research.md, section 4) on cards with 14 GB or more, else d1-2B (~2.7 GB), the fallback below.
   decider-gguf:
     <<: *llama
     container_name: receipt-decider-gguf
@@ -92,6 +92,9 @@ services:
       interval: 5m
       timeout: 10s
       start_period: 2m
+    # A small init as process 1, so a stop also works while the worker is still starting (process 1 ignores signals
+    # it has no handler for, and the worker sets its handler only once it's running).
+    init: true
     stop_signal: SIGTERM
     # On stop the worker finishes the receipt it's on (reading one can take a couple of minutes), then exits.
     stop_grace_period: 3m

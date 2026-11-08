@@ -611,3 +611,15 @@ test('./receipts: pick_mmproj prefers BF16, then F16, then F32, and a name or qu
   assert.equal(pick(['M-Q4.gguf', 'README.md']), '');
   assert.equal(pick(['mmproj-F16.gguf'], 'Q8'), '');
 });
+
+test('siteUrl: an Actual or Nextcloud address typed without a scheme means https; a typed scheme and path are kept', async () => {
+  const { siteUrl } = await import('./config.js');
+  for (const [typed, want] of [
+    ['budget.example.com', 'https://budget.example.com'],
+    [' cloud.example.com/ ', 'https://cloud.example.com'],
+    ['cloud.example.com:8443/nextcloud', 'https://cloud.example.com:8443/nextcloud'],
+    ['http://host.docker.internal:5006', 'http://host.docker.internal:5006'],
+    ['https://budget.example.com/', 'https://budget.example.com'],
+    ['HTTPS://Budget.example.com', 'HTTPS://Budget.example.com'],
+  ]) assert.equal(siteUrl(typed), want, typed);
+});

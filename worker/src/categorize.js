@@ -3,7 +3,7 @@
 // the request goes through decider-remote.js instead. Used by index.js and the replay tools.
 import { config } from './config.js';
 import { waitFor } from './llm.js';
-import { categoryDescriptions } from './category-notes.js';
+import { categoryDescriptions, receiptLabels } from './category-notes.js';
 import { TransientError } from './errors.js';
 import { modelFetch } from './model-fetch.js';
 import { loadKeywords, keywordsWithLearned, keywordFits, matchKeyword, keywordAction, stripDepartment } from './keywords.js';
@@ -15,13 +15,8 @@ const EPS = 1e-9;
 /** value >= bar, forgiving float error (0.6 - 0.4 is 0.19999999999999996, which still meets a 0.2 bar). */
 export const atLeast = (value, bar) => value >= bar - EPS;
 
-export { stripDepartment, similarItems, householdExamples }; // keyword-cli.js and the tests import them from here
+export { stripDepartment, similarItems, householdExamples, receiptLabels }; // keyword-cli.js, index.js and the tests import them from here
 
-/** Labels receipts may use: everything except EXCLUDE_CATEGORY_GROUPS / EXCLUDE_CATEGORIES (bills, debt, savings). */
-export function receiptLabels(labels) {
-  // A group name may itself contain " / " ("Bills / Utilities"), so test the label's start, not its first part.
-  return labels.filter((l) => !config.excludeGroups.some((g) => l.startsWith(`${g} / `)) && !config.excludeCategories.includes(l));
-}
 
 /**
  * What the categorizer knows about the purchase besides the item itself.

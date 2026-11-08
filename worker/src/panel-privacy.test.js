@@ -7,11 +7,13 @@ import path from 'node:path';
 import { config } from './config.js';
 import { makeServer } from './trigger.js';
 import { loadPrivate } from './private-words.js';
+import { testDeps } from './panel-settings.js';
+import { readOverrides } from './web-overrides.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'panel-privacy-test-'));
 process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 Object.assign(config.privacy, { wordsPath: path.join(dir, 'private-words.json'), seedWords: [] });
-Object.assign(config, { statePath: path.join(dir, 'state.json'), heartbeatPath: path.join(dir, 'heartbeat'), settingsPath: path.join(dir, 'settings.json') });
+Object.assign(config, { statePath: path.join(dir, 'state.json'), heartbeatPath: path.join(dir, 'heartbeat'), settingsPath: path.join(dir, 'settings.json'), webSettingsPath: path.join(dir, 'web-settings.json'), categoryNotesPath: path.join(dir, 'category-notes.json') });
 config.trigger.token = 'secret';
 config.decider.provider = 'remote';
 config.decider.apiKey = 'sk-test-SECRET-key-123';
@@ -138,4 +140,92 @@ test('places: the page escapes hostile place words and says what is replaced', a
   assert.ok(!html.includes('<script>alert(1)</script>'));
   assert.ok(html.includes('&#60;script&#62;alert(1)&#60;/script&#62; &#38; &#34;q&#34; town'));
   assert.match(html, /replaced by "a city", "a state", "a street" or "a place"/);
+});
+
+// ---- the Settings tab never shows a secret ----
+
+const SECRETS = { ACTUAL_PASSWORD: 'actual-SECRET-pw-4417', ACTUAL_E2E_PASSWORD: 'e2e-SECRET-pw-5528', NEXTCLOUD_APP_PASSWORD: 'nc-SECRET-app-6639' };
+const NEW_SECRET = 'brand-new-SECRET-7750';
+const hasSecret = (text) => [...Object.values(SECRETS), NEW_SECRET].filter((s) => text.includes(s));
+
+test('secrets (from .env or from the page) never appear in the Settings page or the other pages; only "set" / "not set"', async () => {
+  const saved = { e2e: process.env.ACTUAL_E2E_PASSWORD, nc: process.env.NEXTCLOUD_APP_PASSWORD };
+  process.env.ACTUAL_E2E_PASSWORD = SECRETS.ACTUAL_E2E_PASSWORD;
+  process.env.NEXTCLOUD_APP_PASSWORD = SECRETS.NEXTCLOUD_APP_PASSWORD;
+  fs.writeFileSync(config.webSettingsPath, JSON.stringify({ values: { ACTUAL_PASSWORD: SECRETS.ACTUAL_PASSWORD, MATCH_DAYS: '6' } }));
+  try {
+    for (const p of ['/settings', '/', '/categories', '/keywords', '/learned', '/privacy']) {
+      const res = await call('GET', p);
+      const body = await res.text();
+      assert.deepEqual(hasSecret(body), [], p);
+      assert.deepEqual(hasSecret(JSON.stringify([...res.headers])), [], `${p} headers`);
+    }
+    const html = await (await call('GET', '/settings')).text();
+    for (const k of Object.keys(SECRETS)) {
+      const input = html.match(new RegExp(`<input type="password" name="${k}"[^>]*>`))[0];
+      assert.match(input, / value=""/, k);
+      assert.ok(!/ value="[^"]/.test(input), `${k}: no value in the input`);
+    }
+    assert.match(html, /<span class="tag">set<\/span>/);
+    assert.match(html, /placeholder="Set\. Leave empty to keep it"/);
+    assert.equal((await call('GET', '/web-settings.json')).status, 404, 'the file itself is not served');
+    // the last-reload error and the damaged-file text carry no file contents either
+    fs.writeFileSync(config.webSettingsPath, `{"values": {"ACTUAL_PASSWORD": "${SECRETS.ACTUAL_PASSWORD}"} oops`);
+    assert.deepEqual(hasSecret(await (await call('GET', '/settings')).text()), []);
+    assert.deepEqual(hasSecret(await (await call('GET', '/')).text()), []);
+  } finally {
+    for (const [k, v] of [['ACTUAL_E2E_PASSWORD', saved.e2e], ['NEXTCLOUD_APP_PASSWORD', saved.nc]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    fs.rmSync(config.webSettingsPath, { force: true });
+  }
+});
+
+test('saving, refusing, undoing and resetting a secret: no secret in the redirects, notices, Undo forms or the pages that follow', async () => {
+  fs.writeFileSync(config.webSettingsPath, JSON.stringify({ values: { ACTUAL_PASSWORD: SECRETS.ACTUAL_PASSWORD } }));
+  const seen = [];
+  const all = async (res) => {
+    seen.push(res.headers.get('location') ?? '');
+    const where = res.headers.get('location');
+    const page = where ? await (await fetch(new URL(where, base))).text() : await res.text();
+    seen.push(page);
+    return page;
+  };
+  try {
+    // a refused save (the test login fails): the typed secret is not echoed
+    testDeps.fetchFn = async () => ({ ok: false, status: 400, json: async () => ({ status: 'error', reason: 'invalid-password' }) });
+    let page = await all(await post('/settings-save', { ACTUAL_PASSWORD: NEW_SECRET }));
+    assert.match(page, /refused that password/);
+    assert.match(page, /Nothing was saved/);
+    // a save "anyway", and the Undo form that follows
+    page = await all(await post('/settings-save', { ACTUAL_PASSWORD: NEW_SECRET, anyway: 'yes' }));
+    assert.equal(JSON.parse(fs.readFileSync(config.webSettingsPath, 'utf8')).values.ACTUAL_PASSWORD, NEW_SECRET);
+    const form = page.match(/<form method="post" action="(undo-settings\?key=secret)">([\s\S]*?)<button class="small plain">Undo/);
+    assert.ok(form, 'a secret change can be undone');
+    const fields = Object.fromEntries([...form[2].matchAll(/name="([^"]+)" value="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+    assert.deepEqual(Object.keys(fields).sort(), ['id', 'mac', 'ts']);
+    // undo: the earlier secret comes back, and the page that says so shows neither
+    page = await all(await post('/undo-settings', fields));
+    assert.match(page, /Restored the earlier settings/);
+    assert.equal(JSON.parse(fs.readFileSync(config.webSettingsPath, 'utf8')).values.ACTUAL_PASSWORD, SECRETS.ACTUAL_PASSWORD);
+    // reset one and reset all
+    await all(await post('/settings-reset', { reset: 'ACTUAL_PASSWORD' }));
+    assert.equal(fs.existsSync(config.webSettingsPath), false);
+    await all(await post('/settings-save', { ACTUAL_PASSWORD: NEW_SECRET, anyway: 'yes' }));
+    await all(await post('/settings-reset-all', { confirm: 'yes' }));
+    assert.deepEqual(hasSecret(seen.join('\n')), []);
+  } finally {
+    testDeps.fetchFn = undefined;
+    fs.rmSync(config.webSettingsPath, { force: true });
+  }
+});
+
+test('the server log never gets a secret: the warning for a damaged settings file names the file and the problem, not its contents', () => {
+  const lines = [];
+  fs.writeFileSync(config.webSettingsPath, `{"values": {"NEXTCLOUD_APP_PASSWORD": "${SECRETS.NEXTCLOUD_APP_PASSWORD}"} oops`);
+  readOverrides(config.webSettingsPath, (m) => lines.push(m));
+  fs.rmSync(config.webSettingsPath, { force: true });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(hasSecret(lines[0]), []);
 });

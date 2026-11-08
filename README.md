@@ -97,6 +97,8 @@ or paste it as a link into an Actual note. From it you can:
 - check the inbox right now;
 - switch between dry run and live (it takes effect at the next check);
 - edit your category descriptions and keywords, with an **Undo** button after a removal;
+- exclude category groups or single categories that receipts should never go to (**Categories** tab);
+- change many of the settings below without editing `.env` (**Settings** tab; a value saved there wins over `.env`);
 - press **Try again** on a live receipt that went to review without changing anything in Actual.
 
 The status page uses plain HTTP and anyone with the link can use it, so keep it on your own network and keep the link
@@ -143,6 +145,7 @@ You don't need these day to day. `./receipts help` lists them.
 | `./receipts run-now` | Check the inbox now, like the button on the status page |
 | `./receipts mode` | Show the mode; `mode dry` or `mode live` switches it, like the status page switch (`live` asks you to confirm) |
 | `./receipts trigger-url` | Print the status page link and the webhook address again |
+| `./receipts exclude` | Pick the category groups (and single categories) receipts never go to, such as bills and savings; restarts the worker |
 | `./receipts describe` | Write descriptions for categories that have none (`--refresh` rewrites the auto-written ones; with a cloud reader it asks first) |
 | `./receipts keyword …` | Add, remove, list and test keywords, e.g. `keyword add "Pampers" Kids --always` |
 | `./receipts replay …` | Re-run receipts you have already filed and compare, changing nothing |
@@ -151,15 +154,20 @@ You don't need these day to day. `./receipts help` lists them.
 ## Settings that matter
 
 Every setting lives in `.env`. [`.env.example`](.env.example) lists all of them, each with a short comment and its
-default. Setup fills in the required ones. Run `./receipts restart` after editing `.env`. The ones you are most likely
-to want:
+default. Setup fills in the required ones. Run `./receipts restart` after editing `.env`. Many of them (the connections to
+Actual and Nextcloud, matching, categorizing, the check interval, holidays, keywords and learning) can also be changed on
+the status page's **Settings** tab: each shows where its value comes from (`.env`, this page or the default), a
+**Use the .env value** button undoes an override, and a change applies at the start of the next check, without a
+restart. A value saved there is kept in `data/web-settings.json` and wins over `.env`; `./receipts status` says so when
+that file exists. Models, GPU, providers and API keys, the status page's own key and every file path stay in `.env`. The
+ones you are most likely to want:
 
 | Setting | What it does |
 |---|---|
 | `MATCH_TOLERANCE_PERCENT=25` | Allows restaurant tips (the charge is higher than the receipt) |
 | `MATCH_ACCOUNTS` | Only look for charges in these Actual accounts |
-| `EXCLUDE_CATEGORY_GROUPS` | Category groups receipts never go to, such as bills and savings |
-| `DECIDER_MODEL` | A bigger decider, if your graphics card has room. Run `./receipts download-models` after changing it |
+| `EXCLUDE_CATEGORY_GROUPS` | Category groups receipts never go to, such as bills and savings (`./receipts exclude` sets it; single categories go in `EXCLUDE_CATEGORIES`). The status page hides them too |
+| `DECIDER_MODEL` | The decider model. Setup picks d3-flash 9B when your graphics card has 14 GB or more, else d1-2B. Run `./receipts download-models` after changing it |
 | `READER_LOCAL_MODEL` | A different reader model (see below) |
 | `LEARNING=off` | Turns off learning from your corrections |
 | `MODEL_SLEEP_SECONDS=-1` | Keeps the models loaded (use this if another app shares the graphics card) |

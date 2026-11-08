@@ -1072,11 +1072,12 @@ test('lessonOf stores learnedAt (the sweep day) and lessonsUpTo cuts on it, fall
   // and a sweep writes it
   fakeBudget([split('t1', [child('c-gro', 600, 'MILK'), child('c-fun', 400, 'GUMDROPS')])]);
   await memory.watch(snapshot());
-  await runSweep(new Date('2026-11-05T10:00:00Z'));
-  assert.equal((await memory.loadLessonFile()).lessons[0].learnedAt, '2026-11-05');
+  // (sweep days relative to today, like the charge's date, so the test doesn't expire)
+  await runSweep(new Date(`${day(1)}T10:00:00Z`));
+  assert.equal((await memory.loadLessonFile()).lessons[0].learnedAt, day(1));
   // the next sweeps re-judge the still-watched charge: the lesson keeps the day it was first learned
-  await runSweep(new Date('2026-11-20T10:00:00Z'));
-  assert.equal((await memory.loadLessonFile()).lessons[0].learnedAt, '2026-11-05');
+  await runSweep(new Date(`${day(15)}T10:00:00Z`));
+  assert.equal((await memory.loadLessonFile()).lessons[0].learnedAt, day(1));
 });
 
 test('keywordsWithLearned: yours as they are, learned ones only from the given candidates, none you removed or already have', async () => {

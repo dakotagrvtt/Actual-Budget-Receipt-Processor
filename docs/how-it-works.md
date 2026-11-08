@@ -1,6 +1,6 @@
 # How it works
 
-The details behind the [README](../README.md): how a receipt is matched, split and reviewed, the settings that change each step, and the testing tools. Day to day you don't need `.env` or the command line: the [status page](#the-status-page-webhook-and-actual-link) switches dry run and live, edits descriptions and keywords, and retries receipts. Every setting named here can be set in `.env`; [`.env.example`](../.env.example) lists them all with their defaults. Run `./receipts restart` after changing one.
+The details behind the [README](../README.md): how a receipt is matched, split and reviewed, the settings that change each step, and the testing tools. Day to day you don't need `.env` or the command line: the [status page](#the-status-page-webhook-and-actual-link) switches dry run and live, edits descriptions, keywords and many settings, and retries receipts. Every setting named here can be set in `.env`; [`.env.example`](../.env.example) lists them all with their defaults. Run `./receipts restart` after changing one.
 
 **What leaves the machine.** By default nothing but your requests to your own Actual and Nextcloud servers. The two optional cloud features, the [cloud reader](#cloud-reader-optional) (sends the receipt photo) and the [hosted decider](#hosted-decider-optional) (sends anonymized text), are off unless you set `READER_PROVIDER=remote` or `DECIDER_PROVIDER=remote`.
 
@@ -166,7 +166,26 @@ The worker serves the status page (a small control panel) on port 8095. Every re
   needs JavaScript; without it the pages still work, unsorted.
 - **Categories** and **Keywords:** edit the category descriptions and add or remove keywords (see
   [Category descriptions](#categorizing-offline-mode-and-replay-tests) and [Keywords](#keywords)). Changes apply
-  at the next receipt, without a restart.
+  at the next receipt, without a restart. The Categories tab lists every spending category from Actual (the worker
+  keeps the list from its last check in `data/known-categories.json`), with an empty box for one that has no
+  description yet. **Exclude group** and **Exclude** keep receipts out of a group or category; the **Excluded**
+  section at the bottom has **Include again**. These write `EXCLUDE_CATEGORY_GROUPS` and `EXCLUDE_CATEGORIES` as
+  settings of the Settings tab (below), with **Undo**.
+- **Settings:** the same settings as in `.env`, grouped as in `.env.example` (Connections, Matching, Categorizing,
+  Behaviour, Holidays and gift meals, Keywords and learning), each with its help line, its current value and where
+  that comes from. A value saved on the page goes into `data/web-settings.json` (a JSON object of `.env`-style
+  strings, mode 600) and wins over `.env`; **Use the .env value** removes one, **Reset all to .env** all of them. The
+  worker re-reads `.env` plus that file at the start of every check and updates its settings in place, so no restart
+  is needed (a different `POLL_SECONDS` is used for the wait after that check). A value is checked as `.env` values
+  are, with the same ranges and spellings, before it is saved, and a bad one saves nothing. If the rebuild fails
+  anyway the earlier settings stay in force and the status page says why. A file that can't be read is ignored with a
+  warning, and the page refuses to save until you press **Reset all to .env**. Before a change to the Actual or
+  Nextcloud address, user, password or the inbox is saved, it is tried (a login to Actual over HTTP, a listing of the
+  inbox over WebDAV, each with a separate connection, 15 seconds at most); if the test fails nothing is saved unless
+  you tick **Save even if the connection test fails**. Passwords are never shown (only "set" or "not set"); an empty
+  password box keeps the current one, and **Undo** keeps an old password only in the worker's memory, for 15 minutes.
+  `./receipts exclude` writes `.env`, so it also removes its two keys from `data/web-settings.json`; what cannot be
+  changed here (models, providers, API keys, `TRIGGER_TOKEN`, `DRY_RUN`, paths) stays in `.env`.
 - **From Actual:** notes on the budget page support Markdown, so a link there works as a button without changing
   Actual. Paste `[Receipts](<status page URL>)` into a category or group note.
 - **From your phone or the Nextcloud server:** the page only listens on this machine by default. Set
@@ -311,15 +330,16 @@ instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`
 
 ## Categorizing, offline mode, and replay tests
 
-- **Two models, two jobs.** Qwen3.5-4B (`llm`, or the model in `READER_LOCAL_MODEL`) reads the receipt. The decider (`decider-gguf`, on llama.cpp; d1-2B
-  unless `DECIDER_MODEL` says otherwise) picks a category for each item with a probability for each category. Items under
+- **Two models, two jobs.** Qwen3.5-4B (`llm`, or the model in `READER_LOCAL_MODEL`) reads the receipt. The decider (`decider-gguf`, on llama.cpp; the
+  model in `DECIDER_MODEL`) picks a category for each item with a probability for each category. Items under
   `CATEGORY_MIN_CONFIDENCE` are settled as described above: the store's usual category, or an Uncategorized part for
   you to fill in, and the receipt goes to review if that moves money.
   (Why not the reader for this step too? See [research, section 2](research.md#2-item-categorizers).)
-- **A bigger decider.** `DECIDER_MODEL` in `.env` swaps d1-2B for another `/v1/systemone` GGUF model, which
-  `./receipts download-models` fetches into `./models`.
-  vLLM d3-flash 9B (`ggml-org/vllm-d3-flash-GGUF:Q4_K_M`, with `DECIDER_CTX=8192 DECIDER_BATCH=4096`) splits out more
-  of the right items (95.8% vs 90.9% on the test receipts) but needs about 6.8 GB instead of 2.7 GB. Details in [docs/research.md](research.md).
+- **Which decider.** Setup asks between d1-2B (`LiquidAI/d1-2B-GGUF:Q8_0`, about 2.7 GB of GPU memory) and vLLM
+  d3-flash 9B (`ggml-org/vllm-d3-flash-GGUF:Q4_K_M`, about 6.8 GB, with `DECIDER_CTX=8192 DECIDER_BATCH=4096`), and
+  suggests d3-flash when the card has 14 GB or more. d3-flash splits out more of the right items (95.8% vs 90.9% on the
+  test receipts); details in [docs/research.md](research.md). Without setup the default is d1-2B. `DECIDER_MODEL` in
+  `.env` takes any other `/v1/systemone` GGUF model, which `./receipts download-models` fetches into `./models`.
 - **Holidays and gift meals.** Holidays near the purchase date (computed locally) go to the decider as a gift hint.
   Reading birthdays from your Nextcloud calendars is possible (`OCCASIONS_CALENDAR=true`) but off by default.
   A restaurant charge over `GIFT_MEAL_MIN` ($50) is applied as usual but sent to review: it may be a gift meal.
@@ -337,10 +357,10 @@ instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`
     pipeline filed unchecked are shown with `filed_by: pipeline, unchecked` and are left out of that count
   - the newest item notes per category from your past splits, from any store (for example "Egg Book → Child", "DC Charger → Electronics"). `HOUSEHOLD_EXAMPLES` sets how many per category (default 5; 0 sends none).
     Unchecked pipeline entries can fill at most half of a category's room and end with `[filed by pipeline, unchecked]`
-  - only the spending categories: bills, debt and savings are hidden (`EXCLUDE_CATEGORY_GROUPS`, `EXCLUDE_CATEGORIES`)
+  - only the spending categories: bills, debt and savings are hidden (`EXCLUDE_CATEGORY_GROUPS`, `EXCLUDE_CATEGORIES`; set them with `./receipts exclude`)
 - **Category descriptions (`data/category-notes.json`).** The decider chooses among these descriptions, so they're how it
   learns household knowledge, such as what goes to each person's category or to the kids. Edit them on the status
-  page's **Categories** tab; changes apply at the next receipt, without a restart.
+  page's **Categories** tab (excluded categories are not listed there); changes apply at the next receipt, without a restart.
   - When a spending category has no description, the worker has the reader model write one from that category's past
     transactions (stores, your item notes, amounts). This happens before each batch of receipts (not with a cloud reader), or on demand:
     `./receipts describe` (add `--refresh` to rewrite only the auto ones).

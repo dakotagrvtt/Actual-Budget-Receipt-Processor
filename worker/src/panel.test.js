@@ -151,6 +151,23 @@ test('saving rejects an empty description and a category that does not exist', a
   assert.equal(Object.keys(loadCategoryNotes()).length, 3);
 });
 
+test('excluded groups and categories are not listed, and saving one is refused', async () => {
+  writeNotes();
+  const was = [config.excludeGroups, config.excludeCategories];
+  try {
+    assert.equal(actions.listCategories().length, 3);
+    config.excludeGroups = ['Odd'];
+    config.excludeCategories = ['Daily Expenses / Sam'];
+    const shown = actions.listCategories().map((c) => c.label);
+    assert.deepEqual(shown, ['Daily Expenses / Child'], 'the excluded single category and the excluded group are hidden');
+    for (const label of ['Daily Expenses / Sam', `Odd / ${HOSTILE}`]) {
+      await assert.rejects(actions.saveCategory(form({ label, description: 'x' })), (e) => e instanceof actions.PanelError && /isn't in the list/.test(e.message));
+    }
+  } finally {
+    [config.excludeGroups, config.excludeCategories] = was;
+  }
+});
+
 test('concurrent saves on the notes file do not lose each other', async () => {
   const notes = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`G / C${i}`, `old ${i}`]));
   fs.writeFileSync(config.categoryNotesPath, JSON.stringify(notes));

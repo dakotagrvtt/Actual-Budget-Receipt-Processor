@@ -1,4 +1,4 @@
-// The HTML of the control panel (status, go-live, categories, keywords, learned, privacy, receipt view). Pure functions:
+// The HTML of the control panel (status, go-live, categories, keywords, learned, settings, privacy, receipt view). Pure functions:
 // data in, string out; trigger.js fetches the data and serves the page. Everything user-controlled goes through escape().
 import { config } from './config.js';
 import { isSolo, strengthOf } from './keywords.js';
@@ -41,19 +41,25 @@ td form{margin:0}.check{display:flex;gap:.5rem;align-items:flex-start;margin:.8r
 th.sortable{cursor:pointer;white-space:nowrap;user-select:none}
 .notice form{display:inline;margin-left:.5rem}.notice button{margin:0}
 .photo{display:block;max-width:100%;height:auto;border:1px solid var(--line);border-radius:8px;margin:.5rem 0}
+.setting{border-top:1px solid var(--line);padding:.4rem 0 .6rem}.setting label{margin:.2rem 0}.setting .help{margin:.2rem 0}
+.setting .check{margin:.2rem 0}.setting .check label{margin:0;font-weight:600}
+.setting .actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.nobtn{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.grouphead{display:flex;gap:.5rem;align-items:center;justify-content:space-between;flex-wrap:wrap}.grouphead h2{margin:1.2rem 0 .25rem}
+input[type=password],input[type=number]{font:inherit;width:100%;padding:.45rem .6rem;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
 `;
 
 /** The Content-Security-Policy for every page: only the one inline style and the one inline script (by hash), forms only to this server. */
 export const CSP = `default-src 'none'; style-src ${hashOf(CSS)}; script-src ${hashOf(SCRIPT)}; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
 
-/** The page frame: head, title, top navigation, optional notice. `active` is 'status' | 'categories' | 'keywords' | 'learned' | 'privacy'. */
+/** The page frame: head, title, top navigation, optional notice. `active` is 'status' | 'categories' | 'keywords' | 'learned' | 'settings' | 'privacy'. */
 export function layout({ active, key, notice, body, undo }) {
   const k = `?key=${encodeURIComponent(key)}`;
   const link = (id, href, text) => `<a href="${href}${escape(k)}"${active === id ? ' class="on"' : ''}>${text}</a>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Receipts</title><style>${CSS}</style></head><body>
 <h1>Receipts</h1>
-<nav>${link('status', './', 'Status')}${link('categories', 'categories', 'Categories')}${link('keywords', 'keywords', 'Keywords')}${link('learned', 'learned', 'Learned')}${config.decider.provider === 'remote' ? link('privacy', 'privacy', 'Privacy') : ''}</nav>
+<nav>${link('status', './', 'Status')}${link('categories', 'categories', 'Categories')}${link('keywords', 'keywords', 'Keywords')}${link('learned', 'learned', 'Learned')}${link('settings', 'settings', 'Settings')}${config.decider.provider === 'remote' ? link('privacy', 'privacy', 'Privacy') : ''}</nav>
 ${noticeHtml(notice, undo, key)}
 ${body}
 <script>${SCRIPT}</script>
@@ -132,6 +138,13 @@ function alertBanner(alert) {
   return `<div class="banner live"><b>${refusing ? 'The hosted decider is refusing requests' : 'The worker is paused'}</b>${escape(alert.message)}${alert.at ? ` <span class="muted small">(since ${escape(when(alert.at))})</span>` : ''}. ${refusing ? 'The affected items were marked unsure.' : 'Receipts wait in the inbox; none is marked as failed.'}</div>`;
 }
 
+/** Problems with the Settings tab's settings: the last reload failed (the earlier ones stay in use), or the file is damaged. */
+function settingsBanner({ reloadError, settingsDamaged }, key) {
+  const link = `<a href="settings?key=${escape(encodeURIComponent(key))}">Settings tab</a>`;
+  return (reloadError ? `<div class="banner live"><b>The settings were not reloaded</b>${escape(reloadError)}. The worker is still using the earlier settings. Fix it on the ${link}, or in .env.</div>` : '')
+    + (settingsDamaged ? `<div class="banner live"><b>The settings file is damaged</b>Settings saved on this page are ignored (.env is used) and nothing can be saved until it is reset on the ${link}.</div>` : '');
+}
+
 /** What a cloud reader means for privacy; empty for the local reader. */
 function readerBanner() {
   if (config.reader.provider !== 'remote') return '';
@@ -144,7 +157,7 @@ export function statusPage(data, key, notice, undo) {
     .map((r) => `<tr data-row data-result="${escape(resultKey(r))}"><td>${escape(r.file)}</td><td>${escape(resultText(r))}</td><td data-sort="${escape(r.at ?? '')}">${escape(when(r.at))}</td><td data-act>${viewLink(r, key)}${retryCell(r, key)}</td></tr>`)
     .join('');
   const tools = data.recent.length ? toolbar('recent', 'receipts', { selects: [{ field: 'result', label: 'Result', all: 'All results', values: unique(data.recent.map(resultKey)) }] }) : '';
-  const body = `${alertBanner(data.alert)}${readerBanner()}${modeBanner(data, key)}
+  const body = `${alertBanner(data.alert)}${settingsBanner(data, key)}${readerBanner()}${modeBanner(data, key)}
 ${data.stateError ? `<p class="notice">Can't read the list of receipts: ${escape(data.stateError)}</p>` : ''}
 <div class="muted">last check ${escape(data.heartbeat)} · checks every ${Math.round(config.pollSeconds / 60)} min</div>
 <form ${post('run', key)}><button>Check for receipts now</button></form>
@@ -168,18 +181,30 @@ Receipts it already looked at in dry run are processed again, for real, at the n
   return layout({ active: 'status', key, notice, body, undo });
 }
 
-/** categories: [{ label, description, draft }] */
-export function categoriesPage(categories, key, notice, undo) {
-  const cards = categories
-    .map((c) => `<form class="card" data-row${c.draft ? ' data-draft="1"' : ''} ${post('category-save', key)}>
+const formAction = (action, key) => `${action}?key=${escape(encodeURIComponent(key))}`;
+
+/** data: from categoriesData() { groups: [{ name, categories: [{ label, description, draft }] }], excluded: { groups: [{ name, labels }], categories: [{ label }] }, damaged } */
+export function categoriesPage(data, key, notice, undo) {
+  const exclude = (kind, field, name, text) => `<form ${post('category-exclude', key)}><input type="hidden" name="kind" value="${kind}"><input type="hidden" name="${field}" value="${escape(name)}"><button class="small plain">${text}</button></form>`;
+  const cards = data.groups
+    .map((g) => `<section data-group><div class="grouphead"><h2>${escape(g.name)}</h2>${exclude('group', 'group', g.name, 'Exclude group')}</div>
+${g.categories.map((c) => `<form class="card" data-row${c.draft ? ' data-draft="1"' : ''} ${post('category-save', key)}>
 <input type="hidden" name="label" value="${escape(c.label)}">
-<strong>${escape(c.label)}</strong> <span class="tag${c.draft ? ' draft' : ''}">${c.draft ? 'draft (auto-written)' : 'written by you'}</span>
+<strong>${escape(c.label)}</strong> <span class="tag${c.draft || !c.description ? ' draft' : ''}">${!c.description ? 'no description yet' : c.draft ? 'draft (auto-written)' : 'written by you'}</span>
 <textarea name="description" maxlength="${MAX_DESCRIPTION}" required aria-label="Description of ${escape(c.label)}">${escape(c.description)}</textarea>
-<button class="small" data-act>Save</button>
-</form>`)
+<button class="small" data-act>Save</button> <button class="small plain" formaction="${formAction('category-exclude', key)}" name="kind" value="category" formnovalidate>Exclude</button>
+</form>`).join('')}</section>`)
     .join('');
-  const body = `<p class="muted">What belongs in each category. The model reads these when it picks one for each item, so household knowledge helps most ("Sam's clothes", "baby food goes to Child"). Saving marks a description as yours; the worker never rewrites those. Changes apply at the next check.</p>
-${cards ? `${toolbar('cats', 'categories', { checks: [{ field: 'draft', text: 'Drafts only (auto-written)' }] })}<div id="cats">${cards}</div>` : `<p class="muted">No categories yet. ${config.reader.provider === 'remote' ? 'With a cloud reader nothing is written automatically (it would send category names, store names, amounts and item notes to it); run ./receipts describe to write them.' : 'They are written to the notes file at the next check (or run ./receipts describe).'}</p>`}`;
+  const ex = data.excluded;
+  const includeForm = (kind, field, name) => `<form ${post('category-include', key)}><input type="hidden" name="kind" value="${kind}"><input type="hidden" name="${field}" value="${escape(name)}"><button class="small plain">Include again</button></form>`;
+  const excludedRows = ex.groups.map((g) => `<li><div class="grouphead"><span><b>${escape(g.name)}</b> <span class="muted small">(whole group${g.labels.length ? `, ${g.labels.length} categor${g.labels.length === 1 ? 'y' : 'ies'}` : ''})</span></span>${includeForm('group', 'group', g.name)}</div></li>`)
+    .concat(ex.categories.map((c) => `<li><div class="grouphead"><span>${escape(c.label)}</span>${includeForm('category', 'label', c.label)}</div></li>`))
+    .join('');
+  const body = `${data.damaged ? '<div class="banner live"><b>The settings file is damaged</b>Excluding and including can\'t be saved until it is reset on the Settings tab.</div>' : ''}<p class="muted">What belongs in each category. The model reads these when it picks one for each item, so household knowledge helps most ("Sam's clothes", "baby food goes to Child"). Saving marks a description as yours; the worker never rewrites those. Changes apply at the next check. Every spending category from Actual is listed, with an empty box when it has no description yet. Exclude a group or category that receipts should never go to (bills, debt, savings).</p>
+${cards ? `${toolbar('cats', 'categories', { checks: [{ field: 'draft', text: 'Drafts only (auto-written)' }] })}<div id="cats">${cards}</div>` : `<p class="muted">No categories yet. They are listed after the first check that opens Actual.${config.reader.provider === 'remote' ? ' With a cloud reader nothing is written automatically (it would send category names, store names, amounts and item notes to it); run ./receipts describe to write the descriptions.' : ' Descriptions are written to the notes file at that check (or run ./receipts describe).'}</p>`}
+<h2>Excluded</h2>
+<p class="muted small">Receipts never go to these. Press "Include again" to allow one. The same lists are EXCLUDE_CATEGORY_GROUPS and EXCLUDE_CATEGORIES on the Settings tab. They apply at the next check.</p>
+${excludedRows ? `<ul>${excludedRows}</ul>` : '<p class="muted">Nothing is excluded.</p>'}`;
   return layout({ active: 'categories', key, notice, body, undo });
 }
 
@@ -301,6 +326,70 @@ ${list('p-notplaces', 'words', ['Word', ''], notPlaceRows, 'None')}
 <p class="muted small">Words the scan may flag but that are not people. They are sent as they are.</p>
 ${list('p-notnames', 'words', ['Word', ''], notRows, 'None')}`;
   return layout({ active: 'privacy', key, notice, body, undo });
+}
+
+const SOURCE_TEXT = { page: 'this page', env: '.env', default: 'default' };
+
+/** One setting's input, by type. A secret is never given a value: only "set" or "not set". */
+function settingInput(s) {
+  const id = `s-${s.key}`;
+  const name = `name="${escape(s.key)}" id="${id}"`;
+  switch (s.type) {
+    case 'bool': {
+      const on = ['true', '1', 'yes', 'on'].includes(String(s.value).trim().toLowerCase());
+      return `<div class="check"><input type="hidden" name="${escape(s.key)}" value="false"><input type="checkbox" ${name} value="true"${on ? ' checked' : ''}><label for="${id}">${escape(s.label)}</label></div>`;
+    }
+    case 'enum': {
+      const cur = String(s.value).trim().toLowerCase();
+      return `<label for="${id}">${escape(s.label)}</label><select ${name}>${s.values.includes(cur) ? '' : '<option value="" selected>(not valid: pick one)</option>'}${s.values.map((v) => `<option value="${escape(v)}"${v === cur ? ' selected' : ''}>${escape(v)}</option>`).join('')}</select>`;
+    }
+    case 'secret':
+      return `<label for="${id}">${escape(s.label)}</label><input type="password" ${name} value="" autocomplete="new-password" placeholder="${s.isSet ? 'Set. Leave empty to keep it' : 'Not set'}">`;
+    case 'number':
+      return `<label for="${id}">${escape(s.label)}</label><input type="text" inputmode="${s.int ? 'numeric' : 'decimal'}" ${name} value="${escape(s.value)}" aria-describedby="h-${s.key}">`;
+    default:
+      return `<label for="${id}">${escape(s.label)}</label><input type="text" ${name} value="${escape(s.value)}" maxlength="500" autocomplete="off"${s.type === 'url' ? ' inputmode="url"' : ''}>`;
+  }
+}
+
+function rangeText(s) {
+  if (s.type === 'number') return ` Between ${s.min} and ${s.max}.`;
+  return '';
+}
+
+/** data: from settingsData() */
+export function settingsPage(data, key, notice, undo) {
+  const reset = (s) => (s.source === 'page'
+    ? `<button class="small plain" name="reset" value="${escape(s.key)}" formaction="${formAction('settings-reset', key)}" formnovalidate>Use the .env value</button>`
+    : '');
+  const sections = data.sections.map((sec) => {
+    const rows = sec.settings.map((s) => `<div class="setting">
+${settingInput(s)}
+<div class="muted small help" id="h-${escape(s.key)}">${escape(s.help)}${escape(rangeText(s))}${s.type === 'secret' ? '' : s.default !== '' ? ` Default: ${escape(s.default)}.` : ''}</div>
+<div class="actions"><span class="tag${s.source === 'page' ? ' draft' : ''}">from ${escape(SOURCE_TEXT[s.source])}</span>${s.type === 'secret' ? `<span class="tag">${s.isSet ? 'set' : 'not set'}</span>` : ''}${reset(s)}</div>
+</div>`).join('');
+    const anyway = sec.id === 'connections'
+      ? '<div class="check"><input type="checkbox" name="anyway" value="yes" id="anyway"><label for="anyway">Save even if the connection test fails</label></div><p class="muted small">Before a change to an address, user, password or the inbox is saved, it is tried: Actual by logging in, Nextcloud by listing the inbox. The sync ID is only checked for its form.</p>'
+      : '';
+    return `<form ${post('settings-save', key)}>
+<button class="nobtn" tabindex="-1" aria-hidden="true">Save</button>
+<h2>${escape(sec.title)}</h2>
+${rows}
+${anyway}<input type="hidden" name="section" value="${escape(sec.id)}">
+<button>Save ${escape(sec.title.toLowerCase())}</button>
+</form>`;
+  }).join('\n');
+  const damaged = data.damaged ? `<div class="banner live"><b>The settings file is damaged</b>data/web-settings.json can't be read (${escape(data.damaged)}). It is ignored and .env is used. Nothing can be saved on this page until it is reset.<form ${post('settings-reset-all', key)}><button class="danger">Reset all to .env</button></form></div>` : '';
+  const reloadError = data.reloadError ? `<div class="banner live"><b>The last settings reload failed</b>${escape(data.reloadError)}. The worker is still using the earlier settings.</div>` : '';
+  const resetAll = data.exists && !data.damaged
+    ? `<h2>Reset</h2><form ${post('settings-reset-all', key)}><div class="check"><input type="checkbox" name="confirm" value="yes" id="confirm-reset" required><label for="confirm-reset">Put every setting on this page back to its .env value</label></div><button class="plain">Reset all to .env</button></form>`
+    : '';
+  const body = `${damaged}${reloadError}<p class="muted">Change settings without editing .env. A value saved here wins over .env; "Use the .env value" goes back. Saved changes apply at the start of the next check (press "Check for receipts now" on the Status tab to do it right away).${data.changedAt ? ` Last saved ${escape(when(data.changedAt))}.` : ''}</p>
+${data.ignored?.length ? `<p class="muted small">Ignored in the file (not settings of this page): ${escape(data.ignored.join(', '))}.</p>` : ''}
+${sections}
+${resetAll}
+<p class="muted small">Set in .env only (then ./receipts restart): TRIGGER_TOKEN, TRIGGER_BIND, DRY_RUN (the Status tab has its own switch), ACTUAL_API_VERSION, the models, GPU and provider settings, API keys, CLOUD_NAME_SCAN, PRIVATE_WORDS, PRIVATE_PLACES, the calendar settings and every file path.</p>`;
+  return layout({ active: 'settings', key, notice, body, undo });
 }
 
 const money = (n) => (Number.isFinite(Number(n)) && n !== null && n !== '' ? Number(n).toFixed(2) : '');

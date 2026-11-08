@@ -48,6 +48,8 @@ const MAIN = `
         return { field: c.getAttribute('data-field'), value: c.type === 'checkbox' ? (c.checked ? '1' : '') : c.value };
       });
       rows.forEach(function (row) { row.hidden = !rowVisible(rowText(row), row.dataset, box ? box.value : '', wants); });
+      // a group heading (Categories tab) goes when none of its rows shows
+      list(target, '[data-group]').forEach(function (g) { g.hidden = !g.querySelector('[data-row]:not([hidden])'); });
     }
     if (box) box.addEventListener('input', apply);
     controls.forEach(function (c) { c.addEventListener('change', apply); });

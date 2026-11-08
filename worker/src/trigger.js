@@ -1,27 +1,31 @@
 // The control panel and webhook for the worker (port 8095). Every request needs TRIGGER_TOKEN; without it set, the server doesn't start.
 //   GET  /?key=TOKEN               status page: mode, "Check for receipts now", recent receipts (link it from an Actual note)
-//   GET  /categories, /keywords    edit category descriptions and household keywords
+//   GET  /categories, /keywords    edit category descriptions (and exclude categories) and household keywords
+//   GET  /settings                 change settings without editing .env (data/web-settings.json);  POST /settings-save, /settings-reset, /settings-reset-all
 //   GET  /learned                  what the worker learned from your corrections in Actual;  POST /lesson-forget, /undo-lesson
 //   GET  /privacy                  names kept out of what the remote decider gets (only with DECIDER_PROVIDER=remote)
 //   POST /privacy-word-add, -remove, -notname-add, -notname-remove, -place-add, -place-remove, -notplace-add, -notplace-remove
 //   GET  /go-live                  the confirmation step before leaving dry run
 //   POST /run?key=TOKEN            webhook: check the inbox now (Nextcloud webhook, phone shortcut, curl)
 //   POST /mode, /category-save, /keyword-add, /keyword-remove, /retry    the page's buttons (forms), then a 303 back with a notice
-//   POST /undo-keyword, -category, -word, -notname, -notname-mark, -place, -notplace, -notplace-mark    the Undo button in a notice
+//   POST /category-exclude, /category-include    the Categories tab's Exclude / Include again buttons
+//   POST /undo-keyword, -category, -word, -notname, -notname-mark, -place, -notplace, -notplace-mark, -settings, -exclude    the Undo button in a notice
 //   GET  /receipt?id=STATEKEY      one receipt: photo, what was read, the decision;  GET /receipt-photo?id=…[&page=n][&raw=1] the picture
 // The key can also be sent as an "Authorization: Bearer TOKEN" or "X-Trigger-Key: TOKEN" header.
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs/promises';
-import { config, log } from './config.js';
+import { config, log, reloadStatus } from './config.js';
 import { loadState, parseStateKey } from './state.js';
 import { loadKeywords } from './keywords.js';
 import { learnedData, MemoryError } from './memory.js';
-import { resolveDryRun, envDisagreement } from './settings.js';
+import { resolveDryRun, envDisagreement } from './settings.js'; // the dry run / live switch (not the Settings tab)
 import { upgradeStatus } from './actual-upgrade.js';
 import { readSetupProblem } from './alert.js';
 import { PrivateWordsError } from './private-words.js';
 import * as actions from './panel-actions.js';
+import * as settings from './panel-settings.js';
+import { loadOverrides } from './web-settings.js';
 import * as pages from './panel-pages.js';
 import * as receipts from './panel-receipt.js';
 
@@ -69,7 +73,7 @@ async function statusData() {
   }
   const resolved = resolveDryRun();
   const { dryRun: next, source, settings } = resolved;
-  return { dryRun: config.dryRun, pending: next !== config.dryRun ? next : null, settings: source === 'settings' ? settings : null, envNote: envDisagreement(resolved), apiNote: upgradeStatus.note, stateError, heartbeat, recent, alert: await readSetupProblem() };
+  return { dryRun: config.dryRun, pending: next !== config.dryRun ? next : null, settings: source === 'settings' ? settings : null, envNote: envDisagreement(resolved), apiNote: upgradeStatus.note, stateError, heartbeat, recent, alert: await readSetupProblem(), reloadError: reloadStatus.error, settingsDamaged: loadOverrides().damaged };
 }
 
 const ROUTES = {
@@ -79,6 +83,13 @@ const ROUTES = {
   '/keyword-remove': actions.removeKeywordFromForm,
   '/retry': (form) => actions.tryAgain(form),
   '/lesson-forget': actions.forgetLessonFromForm,
+  '/settings-save': settings.saveSettings,
+  '/settings-reset': settings.resetSetting,
+  '/settings-reset-all': settings.resetAllSettings,
+  '/category-exclude': settings.excludeCategory,
+  '/category-include': settings.includeCategory,
+  '/undo-settings': settings.undoSettings,
+  '/undo-exclude': settings.undoExclude,
   '/undo-lesson': actions.undoLesson,
   '/undo-keyword': actions.undoKeyword,
   '/undo-category': actions.undoCategory,
@@ -98,8 +109,8 @@ const ROUTES = {
   '/privacy-notplace-remove': actions.unmarkNotPlace,
 };
 // Where each form sends you back to.
-const UNDO_BACK = { 'undo-keyword': './keywords', 'undo-category': './categories', 'undo-lesson': './learned' };
-const BACK = { '/mode': './', '/category-save': './categories', '/keyword-add': './keywords', '/keyword-remove': './keywords', '/lesson-forget': './learned', '/retry': './' };
+const UNDO_BACK = { 'undo-keyword': './keywords', 'undo-category': './categories', 'undo-lesson': './learned', 'undo-settings': './settings', 'undo-exclude': './categories' };
+const BACK = { '/mode': './', '/category-save': './categories', '/keyword-add': './keywords', '/keyword-remove': './keywords', '/lesson-forget': './learned', '/retry': './', '/settings-save': './settings', '/settings-reset': './settings', '/settings-reset-all': './settings', '/category-exclude': './categories', '/category-include': './categories' };
 for (const route of Object.keys(ROUTES)) if (route.startsWith('/privacy-')) BACK[route] = './privacy';
 for (const r of actions.UNDO_ROUTES) BACK[`/${r}`] ??= UNDO_BACK[r] ?? './privacy';
 
@@ -160,7 +171,11 @@ async function handlePage(res, url, key, notice, undo, deps) {
     return true;
   }
   if (pathname === '/categories') {
-    html(res, pages.categoriesPage(actions.listCategories(), key, notice, undo));
+    html(res, pages.categoriesPage(actions.categoriesData(), key, notice, undo));
+    return true;
+  }
+  if (pathname === '/settings') {
+    html(res, pages.settingsPage(settings.settingsData(), key, notice, undo));
     return true;
   }
   if (pathname === '/receipt') {

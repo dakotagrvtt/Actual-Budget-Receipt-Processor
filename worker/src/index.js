@@ -1,12 +1,13 @@
 // The receipt worker (the Docker entry point): every poll it lists the Nextcloud inbox, runs each due receipt through
 // receipt.js, files it, and records progress in state.json (state.js) so nothing is done twice. Importing it starts nothing.
 import './private-umask.js';
-import { config, log } from './config.js';
+import { config, log, reloadConfig } from './config.js';
 import * as nextcloud from './nextcloud.js';
 import * as actual from './actual.js';
 import { waitForModel } from './llm.js';
 import { receiptLabels } from './categorize.js';
 import { describeMissing, autoDescribeAllowed } from './categories.js';
+import { rememberCategories } from './known-categories.js';
 import { loadAliases } from './payee.js';
 import { processReceipt } from './receipt.js';
 import * as learning from './learning.js';
@@ -31,7 +32,7 @@ let skippedDescribe = false; // the cloud-reader note about category description
 // Compares the Actual server's version with the API in use (ACTUAL_API_VERSION=auto only; see actual-upgrade.js).
 const upgrade = createUpgradeWatcher({
   setting: config.actual.apiVersion,
-  serverURL: config.actual.serverURL,
+  serverURL: () => config.actual.serverURL, // read each time: the Settings tab can change it between checks
   usingVersion: actual.apiInfo.version,
   startVersion: actual.apiInfo.serverVersion,
   failedFor: actual.apiInfo.failedFor,
@@ -209,7 +210,10 @@ async function cycle({ recheckAll = false } = {}) {
   }
   try {
     if (needsActual) {
-      labels = await actual.categoryLabels();
+      const rows = await actual.spendingCategories();
+      labels = actual.labelsOf(rows);
+      // The Categories tab lists every category from this, with or without a description. Never blocks a receipt.
+      await rememberCategories(rows).catch((err) => log(`could not save the category list for the status page: ${err.message}`));
       if (todo.length > 0) await describeNewCategories(labels);
       // Before the receipts: what you corrected since last time may already help with them. Never blocks a receipt.
       if (sweepDue) {
@@ -319,6 +323,7 @@ async function main() {
   });
   startTriggerServer(trigger);
   while (!stopping) {
+    reloadConfig(); // settings changed on the status page's Settings tab apply here, at the start of a check, never mid-check
     refreshMode(); // the status page / ./receipts mode may have changed it; only ever between cycles
     await heartbeat();
     try {

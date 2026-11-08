@@ -80,16 +80,23 @@ export async function close() {
   await api.shutdown();
 }
 
-/** Map of "Group / Category" label → category id, for spending categories that aren't hidden. */
-export async function categoryLabels() {
+/** Spending categories that aren't hidden, in Actual's order: [{ group, label: "Group / Category", id }]. */
+export async function spendingCategories() {
   const [groups, categories] = await Promise.all([api.getCategoryGroups(), api.getCategories()]);
   const groupName = new Map(groups.map((g) => [g.id, g.name]));
-  const labels = new Map();
+  const rows = [];
   for (const c of categories) {
     if (c.is_income || c.hidden) continue;
-    labels.set(`${groupName.get(c.group_id) ?? 'Other'} / ${c.name}`, c.id);
+    const group = groupName.get(c.group_id) ?? 'Other';
+    rows.push({ group, label: `${group} / ${c.name}`, id: c.id });
   }
-  return labels;
+  return rows;
+}
+
+/** Map of "Group / Category" label → category id, for spending categories that aren't hidden. */
+export const labelsOf = (rows) => new Map(rows.map((c) => [c.label, c.id]));
+export async function categoryLabels() {
+  return labelsOf(await spendingCategories());
 }
 
 /** Map of category id → "Group / Category" label: categoryLabels() turned around. */

@@ -277,7 +277,7 @@ test('the script runs against a tiny fake page: sorts on header click (toggling)
   const input = { value: '', addEventListener: (n, f) => listeners.push(f) };
   const select = { type: 'select-one', value: '', getAttribute: () => 'k', addEventListener: (n, f) => listeners.push(f) };
   const tools = { hidden: true, getAttribute: () => 'tbl', querySelector: () => input, querySelectorAll: () => [select] };
-  const target = { querySelectorAll: () => rows };
+  const target = { querySelectorAll: (sel) => (sel === '[data-row]' ? rows : []) }; // no [data-group] headings on this page
   const doc = {
     getElementById: () => target,
     createElement: () => ({ textContent: '', nodeName: 'SPAN' }),

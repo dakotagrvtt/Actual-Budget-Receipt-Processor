@@ -2,7 +2,9 @@
 // notice to show, or throws PanelError with a message for the user. No HTTP in here, so tests call them directly.
 import crypto from 'node:crypto';
 import { config, log } from './config.js';
-import { loadCategoryNotes, saveUserNote, restoreNote, isDraft } from './category-notes.js';
+import { loadCategoryNotes, saveUserNote, restoreNote, isDraft, receiptLabels } from './category-notes.js';
+import { knownCategories } from './known-categories.js';
+import { exclusionRules, loadOverrides } from './web-settings.js';
 import { keywordCandidates, syncLearned, addKeyword, normalize, removeKeyword, restoreKeyword, findKeyword, loadKeywords, strengthOf } from './keywords.js';
 import { forgetLesson, loadLessonFile, restoreLesson } from './memory.js';
 import { forgetKeys, loadState, parseStateKey } from './state.js';
@@ -25,9 +27,9 @@ const CLOCK_SKEW_MS = MS_PER_MINUTE; // an Undo stamped this far in the future i
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The undo forms a handler may offer: route name (no slash) → used by the page to build the form. */
-export const UNDO_ROUTES = new Set(['undo-keyword', 'undo-category', 'undo-word', 'undo-notname', 'undo-notname-mark', 'undo-place', 'undo-notplace', 'undo-notplace-mark', 'undo-lesson']);
+export const UNDO_ROUTES = new Set(['undo-keyword', 'undo-category', 'undo-word', 'undo-notname', 'undo-notname-mark', 'undo-place', 'undo-notplace', 'undo-notplace-mark', 'undo-lesson', 'undo-settings', 'undo-exclude']);
 /** A handler fills out.undo = { route, fields } to say "this can be undone with a POST of these fields". */
-const offerUndo = (out, route, fields) => {
+export const offerUndo = (out, route, fields) => {
   if (out) out.undo = { route, fields: signUndo(route, fields) };
 };
 
@@ -42,7 +44,7 @@ export function signUndo(route, fields, now = Date.now()) {
   return { ...all, mac: macOf(route, Object.entries(all)) };
 }
 /** Throws a PanelError unless the form is a signed, fresh Undo for this route, with no field added or changed. */
-function checkUndo(route, form, now = Date.now()) {
+export function checkUndo(route, form, now = Date.now()) {
   const mac = form.get('mac') ?? '';
   const entries = [...form.entries()].filter(([k]) => k !== 'mac');
   const want = Buffer.from(macOf(route, entries));
@@ -81,23 +83,66 @@ export async function changeMode(form) {
     : 'Switching to live. It applies at the start of the next check (press "Check for receipts now" to do it right away).';
 }
 
-/** Every category in the notes file: [{ label, description, draft }]. */
+/** The group part of "Group / Category" when the category list from Actual isn't known yet (a category name rarely has " / " in it). */
+const groupOfLabel = (label) => (label.includes(' / ') ? label.slice(0, label.lastIndexOf(' / ')) : 'Other');
+
+/**
+ * The categories in the notes file that receipts may use: [{ label, description, draft }]. Ones excluded with
+ * EXCLUDE_CATEGORY_GROUPS / EXCLUDE_CATEGORIES (or on the Categories tab) stay in the file (they come back as they were if
+ * un-excluded) but aren't listed.
+ */
 export function listCategories() {
-  return Object.entries(loadCategoryNotes()).map(([label, v]) => ({
+  const notes = loadCategoryNotes();
+  const shown = new Set(receiptLabels(Object.keys(notes), exclusionRules()));
+  return Object.entries(notes).filter(([label]) => shown.has(label)).map(([label, v]) => ({
     label,
     description: descriptionOf(v),
     draft: isDraft(v),
   }));
 }
 
+/**
+ * What the Categories tab shows: every spending category Actual had at the last check (plus any in the notes file), with its
+ * description (empty when it has none), grouped, and the excluded groups and categories for the "Excluded" section.
+ * { groups: [{ name, categories: [{ label, description, draft }] }], excluded: { groups: [{ name, labels }], categories: [{ label }] }, damaged }
+ */
+export function categoriesData() {
+  const overrides = loadOverrides();
+  const rules = exclusionRules(overrides);
+  const notes = loadCategoryNotes();
+  const known = knownCategories();
+  const groupOf = new Map(known.map((c) => [c.label, c.group]));
+  const labels = [...new Set([...known.map((c) => c.label), ...Object.keys(notes)])];
+  const shown = new Set(receiptLabels(labels, rules));
+  const groups = [];
+  for (const label of labels.filter((l) => shown.has(l))) {
+    const name = groupOf.get(label) ?? groupOfLabel(label);
+    let g = groups.find((x) => x.name === name);
+    if (!g) groups.push((g = { name, categories: [] }));
+    g.categories.push({ label, description: descriptionOf(notes[label]), draft: isDraft(notes[label]) });
+  }
+  const underGroup = (label) => rules.excludeGroups.some((g) => label.startsWith(`${g} / `));
+  return {
+    groups,
+    excluded: {
+      groups: rules.excludeGroups.map((name) => ({ name, labels: labels.filter((l) => l.startsWith(`${name} / `)) })),
+      categories: rules.excludeCategories.filter((l) => !underGroup(l)).map((label) => ({ label })),
+    },
+    damaged: overrides.damaged,
+  };
+}
+
+/** A category the Categories tab lists: in the notes file or in Actual's list, and not excluded. */
+const listed = (label) => (Object.hasOwn(loadCategoryNotes(), label) || knownCategories().some((c) => c.label === label)) && receiptLabels([label], exclusionRules()).length === 1;
+
 export async function saveCategory(form, out) {
   const label = form.get('label') ?? '';
   const description = (form.get('description') ?? '').trim();
   if (!description) throw new PanelError('The description can\'t be empty.');
   if (description.length > MAX_DESCRIPTION) throw new PanelError(`Keep the description under ${MAX_DESCRIPTION} characters.`);
-  if (!Object.hasOwn(loadCategoryNotes(), label)) throw new PanelError('That category isn\'t in the list.');
+  if (!listed(label)) throw new PanelError('That category isn\'t in the list.');
   const before = loadCategoryNotes()[label];
-  const changed = await saveUserNote(label, description);
+  const changed = await saveUserNote(label, description, undefined, true); // true: a category with no entry yet gets one
   // Saving a draft unchanged still makes it yours, which saveUserNote does; false only means a plain string with the same text.
   if (!changed) return `"${label}" was already like that.`;
   const old = descriptionOf(before);
@@ -112,7 +157,7 @@ export async function undoCategory(form) {
   const label = form.get('label') ?? '';
   const description = (form.get('description') ?? '').replace(/\r\n/g, '\n'); // browsers send line breaks as CRLF
   if (description.length > MAX_UNDO_TEXT) throw new PanelError('That description is too long to restore.');
-  if (!Object.hasOwn(loadCategoryNotes(), label)) throw new PanelError('That category isn\'t in the list.');
+  if (!listed(label)) throw new PanelError('That category isn\'t in the list.');
   const cur = loadCategoryNotes()[label];
   if (hash(descriptionOf(cur)) !== form.get('wrote')) return `"${label}" has changed since, so the earlier text was not put back.`;
   const writtenBy = (form.get('writtenBy') ?? '').slice(0, MAX_WRITTEN_BY);

@@ -23,6 +23,10 @@ DEFAULT_READER_REVISION=e87f176479d0855a907a41277aca2f8ee7a09523
 DEFAULT_READER_FILE=Qwen3.5-4B-Q8_0.gguf
 DEFAULT_READER_MMPROJ=mmproj-BF16.gguf
 DEFAULT_DECIDER=LiquidAI/d1-2B-GGUF:Q8_0
+# The larger local decider: better on hard items (docs/research.md), about 6.8 GB instead of 2.7. Setup suggests it
+# when the GPU has BIG_DECIDER_MIB or more (reader 5.6 GB + this 6.8 GB + headroom for image encoding).
+BIG_DECIDER=ggml-org/vllm-d3-flash-GGUF:Q4_K_M
+BIG_DECIDER_MIB=14336
 
 SMALL_GPU_MIB=10240        # below this much GPU memory setup chooses compose.small-gpu.yaml
 MODEL_DOWNLOAD_MINUTES=120 # how long to wait for a model download before giving up
@@ -120,7 +124,16 @@ env_unset() {
 env_lower() { env_get "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # A value counts as missing when it's empty or still the example placeholder.
-env_missing() { local v; v="$(env_get "$1")"; [[ -z "$v" || "$v" == *example.lan* ]]; }
+# fix_site_url KEY: an address typed without http:// or https:// gets https:// (the worker reads it the same way); a trailing / goes.
+fix_site_url() {
+  local v fixed
+  v="$(env_get "$1")"; [[ -n "$v" ]] || return 0
+  fixed="${v%"${v##*[!/]}"}"
+  [[ "$fixed" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]] || fixed="https://$fixed"
+  if [[ "$fixed" != "$v" ]]; then env_set "$1" "$fixed"; say "$1: using $fixed"; fi
+}
+# Empty, or still the placeholder copied from .env.example (example.com there, example.lan in older copies).
+env_missing() { local v; v="$(env_get "$1")"; [[ -z "$v" || "$v" == *example.lan* || "$v" == *example.com* ]]; }
 
 # ask_value KEY "hint" [secret] [optional]
 ask_value() {
@@ -727,11 +740,200 @@ choose_decider() {
     compose_reader_last
     [[ -n "$(env_get PRIVATE_WORDS)" ]] || ask_value PRIVATE_WORDS "first names and nicknames of your household, comma-separated, always hidden from the hosted model (Enter to skip; you can add more on the status page, Privacy)" "" optional
     say "The decider will run on TypeSafe. Run ./receipts check once it is started to test the key."
-  elif [[ $was == Y ]]; then
-    env_set DECIDER_PROVIDER local
-    compose_remove "$REMOTE_OVERLAY"
-    env_unset CLOUD_NAME_SCAN
-    say "The decider runs on this machine again. DECIDER_API_KEY stays in .env; remove it if you won't use it."
+  else
+    if [[ $was == Y ]]; then
+      env_set DECIDER_PROVIDER local
+      compose_remove "$REMOTE_OVERLAY"
+      env_unset CLOUD_NAME_SCAN
+      say "The decider runs on this machine again. DECIDER_API_KEY stays in .env; remove it if you won't use it."
+    fi
+    choose_local_decider
+  fi
+}
+
+# csv_items VALUE: the comma-separated items of VALUE, trimmed, one per line, empty ones dropped.
+csv_items() {
+  local item
+  while IFS= read -r item; do
+    item="${item#"${item%%[![:space:]]*}"}"; item="${item%"${item##*[![:space:]]}"}"
+    if [[ -n "$item" ]]; then printf '%s\n' "$item"; fi
+  done <<< "${1//,/$'\n'}"
+}
+
+# ask_numbers MAX: ask for numbers from 1 to MAX (commas or spaces between them). Sets PICK to keep (Enter, --yes, or no input),
+# none ("-") or list (then PICKS holds the numbers, sorted, without repeats). Asks again after an invalid number.
+ask_numbers() {
+  local max="$1" reply tok bad toks
+  PICK=keep; PICKS=()
+  if [[ $YES == 1 ]]; then return 0; fi
+  while :; do
+    read -r -p "Numbers (commas or spaces), Enter keeps the current choice, - means none: " reply || return 0
+    reply="${reply//,/ }"
+    read -ra toks <<< "$reply" || true
+    if (( ${#toks[@]} == 0 )); then return 0; fi
+    if [[ "${toks[*]}" == "-" ]]; then PICK=none; return 0; fi
+    bad=""
+    for tok in "${toks[@]}"; do
+      if [[ ! "$tok" =~ ^[0-9]{1,6}$ ]] || (( 10#$tok < 1 || 10#$tok > max )); then bad="$tok"; break; fi
+    done
+    if [[ -n "$bad" ]]; then say "'$bad' isn't a number from 1 to $max. Try again."; continue; fi
+    PICK=list
+    mapfile -t PICKS < <(for tok in "${toks[@]}"; do echo $((10#$tok)); done | sort -nu)
+    return 0
+  done
+}
+
+# unset_web_override KEY...: .env is not the last word for settings that can be changed on the status page: a key saved in
+# data/web-settings.json wins over it. After writing such a key to .env, a small worker run (src/web-settings-cli.js) removes the
+# key from that file (bash does not read the JSON), so the value just written is the one in use.
+unset_web_override() {
+  [[ -s data/web-settings.json ]] || return 0
+  local out line
+  if ! out="$("${ONE_OFF[@]}" node src/web-settings-cli.js unset "$@" 2>&1 </dev/null)"; then
+    warn "Couldn't update data/web-settings.json: ${out##*$'\n'}. A value saved on the status page (Settings tab) still wins over .env."
+    return 0
+  fi
+  while IFS= read -r line; do
+    [[ "$line" == "unset "* ]] && say "Also removed ${line#unset } from the settings saved on the status page, so the .env value applies."
+  done <<< "$out"
+  return 0
+}
+
+# effective_excludes: the exclusions in force now, in EFF_GROUPS and EFF_SINGLES: what the status page saved if it set them, else .env.
+# Asked of the worker image (web-settings-cli.js get), which knows both; if that fails, .env alone.
+effective_excludes() {
+  local out tag key value got=0
+  EFF_GROUPS="" EFF_SINGLES=""
+  out="$("${ONE_OFF[@]}" node src/web-settings-cli.js get EXCLUDE_CATEGORY_GROUPS EXCLUDE_CATEGORIES 2>/dev/null </dev/null)" || out=""
+  while IFS=$'\t' read -r tag key value; do
+    [[ "$tag" == value ]] || continue
+    value="${value%$'\r'}"
+    case "$key" in
+      EXCLUDE_CATEGORY_GROUPS) EFF_GROUPS="$value"; got=$(( got | 1 )) ;;
+      EXCLUDE_CATEGORIES) EFF_SINGLES="$value"; got=$(( got | 2 )) ;;
+    esac
+  done <<< "$out"
+  if (( got != 3 )); then EFF_GROUPS="$(env_get EXCLUDE_CATEGORY_GROUPS)"; EFF_SINGLES="$(env_get EXCLUDE_CATEGORIES)"; fi
+  return 0
+}
+
+# choose_excludes: pick the Actual category groups, and single categories, that receipts never go to (EXCLUDE_CATEGORY_GROUPS and
+# EXCLUDE_CATEGORIES in .env). Reads the categories with a one-off worker run, so the worker image must be built.
+# Returns 0 when .env changed, 2 when it stayed the same, 1 when the categories couldn't be read.
+choose_excludes() {
+  local out tag group label g i n changed=2 sel old_groups old_singles new_groups new_singles dropped
+  local -a groups=() labels=() lgroup=() cur_groups cur_singles cand=() lines
+  local -A count=() seen=()
+  say "Reading your categories from Actual..."
+  out="$("${ONE_OFF[@]}" node src/list-categories.js --tsv 2>/dev/null </dev/null)" || out=""
+  while IFS=$'\t' read -r tag group label; do
+    [[ "$tag" == category && -n "$group" && -n "$label" ]] || continue
+    label="${label%$'\r'}"
+    if [[ "$group$label" == *,* ]]; then warn "Skipping '$label': a name with a comma can't be listed in .env."; continue; fi
+    if [[ -z "${count[$group]:-}" ]]; then groups+=("$group"); count[$group]=0; fi
+    count[$group]=$(( count[$group] + 1 ))
+    labels+=("$label"); lgroup+=("$group")
+  done <<< "$out"
+  if (( ${#groups[@]} == 0 )); then
+    warn "Couldn't read your categories from Actual; exclude them later with ./receipts exclude (or EXCLUDE_CATEGORY_GROUPS in .env)."
+    return 1
+  fi
+  effective_excludes
+  mapfile -t cur_groups < <(csv_items "$EFF_GROUPS")
+  mapfile -t cur_singles < <(csv_items "$EFF_SINGLES")
+  old_groups="$(IFS=,; echo "${cur_groups[*]:-}")"
+  old_singles="$(IFS=,; echo "${cur_singles[*]:-}")"
+
+  say "Receipts never go to excluded categories. Bills, debt and savings are usually routed by Actual rules instead."
+  say "Category groups in Actual:"
+  for i in "${!groups[@]}"; do
+    g="${groups[$i]}"; sel=""
+    for n in ${cur_groups[@]+"${cur_groups[@]}"}; do if [[ "$n" == "$g" ]]; then sel="  [excluded]"; fi; done
+    printf '  %2d) %s (%d)%s\n' $(( i + 1 )) "$g" "${count[$g]}" "$sel"
+  done
+  say "Which groups should receipts never go to?"
+  ask_numbers "${#groups[@]}"
+  case "$PICK" in
+    keep) new_groups=("${cur_groups[@]+"${cur_groups[@]}"}") ;;
+    none) new_groups=() ;;
+    list) new_groups=(); for n in "${PICKS[@]}"; do new_groups+=("${groups[$(( n - 1 ))]}"); done ;;
+  esac
+  if [[ $PICK != keep ]]; then
+    dropped=""
+    for n in ${cur_groups[@]+"${cur_groups[@]}"}; do
+      for g in "${groups[@]}"; do if [[ "$g" == "$n" ]]; then seen[$n]=1; fi; done
+      if [[ -z "${seen[$n]:-}" ]]; then dropped+="${dropped:+, }$n"; fi
+    done
+    if [[ -n "$dropped" ]]; then say "Dropped, no longer in Actual: $dropped"; fi
+  fi
+
+  new_singles=("${cur_singles[@]+"${cur_singles[@]}"}")
+  if yn "Also exclude single categories from the other groups?" N; then
+    for i in "${!labels[@]}"; do
+      sel=0
+      for g in ${new_groups[@]+"${new_groups[@]}"}; do if [[ "$g" == "${lgroup[$i]}" ]]; then sel=1; fi; done
+      if (( sel == 0 )); then cand+=("$i"); fi
+    done
+    if (( ${#cand[@]} == 0 )); then
+      say "Every group is excluded already."
+    else
+      n=0
+      for i in "${cand[@]}"; do
+        n=$(( n + 1 )); sel=""
+        for g in ${cur_singles[@]+"${cur_singles[@]}"}; do if [[ "$g" == "${labels[$i]}" ]]; then sel="  [excluded]"; fi; done
+        printf '  %3d) %s%s\n' "$n" "${labels[$i]}" "$sel"
+      done
+      say "Which categories should receipts never go to?"
+      ask_numbers "${#cand[@]}"
+      case "$PICK" in
+        none) new_singles=() ;;
+        list)
+          new_singles=(); seen=()
+          for n in "${PICKS[@]}"; do new_singles+=("${labels[${cand[$(( n - 1 ))]}]}"); done
+          dropped=""
+          for n in ${cur_singles[@]+"${cur_singles[@]}"}; do
+            for g in "${labels[@]}"; do if [[ "$g" == "$n" ]]; then seen[x]=1; fi; done
+            if [[ -z "${seen[x]:-}" ]]; then dropped+="${dropped:+, }$n"; fi
+            seen=()
+          done
+          if [[ -n "$dropped" ]]; then say "Dropped, no longer in Actual: $dropped"; fi
+          ;;
+      esac
+    fi
+  fi
+
+  g="$(IFS=,; echo "${new_groups[*]:-}")"
+  n="$(IFS=,; echo "${new_singles[*]:-}")"
+  local -a written=()
+  if [[ "$g" != "$old_groups" ]]; then env_set EXCLUDE_CATEGORY_GROUPS "$g"; written+=(EXCLUDE_CATEGORY_GROUPS); changed=0; fi
+  if [[ "$n" != "$old_singles" ]]; then env_set EXCLUDE_CATEGORIES "$n"; written+=(EXCLUDE_CATEGORIES); changed=0; fi
+  if (( ${#written[@]} )); then unset_web_override "${written[@]}"; fi
+  say "Excluded groups: ${g:-none}"
+  say "Excluded single categories: ${n:-none}"
+  return "$changed"
+}
+
+# choose_local_decider: d1-2B or the larger d3-flash. The suggested answer is the current choice, or else it follows
+# the GPU memory found in step 3. Any other DECIDER_MODEL set by hand is kept as it is.
+choose_local_decider() {
+  local current big=N
+  current="$(env_get DECIDER_MODEL)"
+  if [[ -n "$current" && "$current" != "$DEFAULT_DECIDER" && "$current" != "$BIG_DECIDER" ]]; then
+    say "Decider model: $current (DECIDER_MODEL in .env)."
+    return
+  fi
+  if [[ "$current" == "$BIG_DECIDER" ]]; then big=Y
+  elif [[ -z "$current" && -n "${GPU_MIB:-}" ]] && (( GPU_MIB >= BIG_DECIDER_MIB )); then big=Y; fi
+  say "Two local deciders: d1-2B (about 2.7 GB of GPU memory) or d3-flash 9B (about 6.8 GB; it picks hard items better)."
+  say "With the reader, d3-flash needs about $(( BIG_DECIDER_MIB / 1024 )) GB of GPU memory${GPU_MIB:+; this GPU has $(( GPU_MIB / 1024 )) GB}."
+  if yn "Use d3-flash 9B?" "$big"; then
+    env_set DECIDER_MODEL "$BIG_DECIDER"
+    # Its prompts are under 2.5k tokens, so a smaller context and batch than the default leave memory free.
+    [[ -n "$(env_get DECIDER_CTX)" ]] || env_set DECIDER_CTX 8192
+    [[ -n "$(env_get DECIDER_BATCH)" ]] || env_set DECIDER_BATCH 4096
+  else
+    env_set DECIDER_MODEL "$DEFAULT_DECIDER"
+    if [[ "$current" == "$BIG_DECIDER" ]]; then env_unset DECIDER_CTX; env_unset DECIDER_BATCH; fi
   fi
 }
 
@@ -934,6 +1136,8 @@ setup_env() {
     ask_value ACTUAL_E2E_PASSWORD "only if the budget uses end-to-end encryption (Enter to skip)" secret optional
   fi
   env_missing NEXTCLOUD_URL && ask_value NEXTCLOUD_URL "your Nextcloud address, e.g. https://cloud.example.lan"
+  fix_site_url ACTUAL_SERVER_URL
+  fix_site_url NEXTCLOUD_URL
   env_missing NEXTCLOUD_USER && ask_value NEXTCLOUD_USER "your Nextcloud login name"
   env_missing NEXTCLOUD_APP_PASSWORD && ask_value NEXTCLOUD_APP_PASSWORD "Nextcloud: Personal settings > Security > Create new app password" secret
   say ".env has everything it needs."
@@ -982,6 +1186,7 @@ setup_gpu() {
       want+=":compose.small-gpu.yaml"
     fi
   fi
+  GPU_MIB="$vram_mb" # for the decider choice in step 4
   current="$(env_get COMPOSE_FILE)" # read after reset_cpu_settings, which may have changed it
   base_current="$(base_compose "$current")" # the hosted-decider and cloud-reader files are chosen in step 4
   if [[ "$want" != compose.yaml && "$base_current" != "$want" ]]; then
@@ -1026,6 +1231,13 @@ setup_start() {
   if [[ "$DOCKER_OK" != 1 ]]; then
     say "Docker wasn't reachable. Fix that, then run ./receipts start."
   elif yn "Start the pipeline now ($(mode_blurb))?" Y; then
+    # Before the first start, so the worker never runs with the wrong exclusions. The picker reads the categories from
+    # Actual with a one-off worker run, which needs the image; it must not end setup.
+    if docker compose build worker; then
+      choose_excludes || true
+    else
+      warn "Couldn't build the worker; skipping the category exclusions. Run ./receipts exclude later."
+    fi
     if ./receipts start; then
       wait_for
       for c in "${WAIT_FOR[@]}"; do wait_healthy "$c" "$STARTUP_WAIT_MINUTES" || warn "$c isn't healthy yet; see ./receipts status"; done
@@ -1064,7 +1276,7 @@ setup() {
       *) die "setup: unknown option '$arg' (only --yes)" ;;
     esac
   done
-  ASKED=0; NEW_ENV=0; DOCKER_OK=0
+  ASKED=0; NEW_ENV=0; DOCKER_OK=0; GPU_MIB=""
   setup_docker
   setup_env
   setup_gpu
@@ -1113,10 +1325,29 @@ cmd_restart() {
   need_env
   prepare_hosting
   pick_services
-  # The services the new setup needs (decider-gguf after a switch to local, llm after a switch from a cloud reader).
-  docker compose up -d "${SERVICES[@]}"
-  # up -d (not restart) so .env changes are picked up.
+  # The models the new setup needs (decider-gguf after a switch to local, llm after a switch from a cloud reader),
+  # left running when they already are. Then recreate the worker once: up -d (not restart) so .env changes apply.
+  local s models=()
+  for s in "${SERVICES[@]}"; do [[ "$s" == worker ]] || models+=("$s"); done
+  if (( ${#models[@]} )); then docker compose up -d "${models[@]}"; fi
   docker compose up -d --force-recreate worker
+}
+
+# cmd_exclude: pick the categories receipts never go to; restart the worker when that changed .env and it is running.
+cmd_exclude() {
+  need_env
+  local rc=0
+  choose_excludes || rc=$?
+  case "$rc" in
+    0)
+      if [[ "$(docker inspect -f '{{.State.Running}}' receipt-worker 2>/dev/null || true)" == true ]]; then
+        cmd_restart
+      else
+        say "Saved. It applies at the next ./receipts start."
+      fi ;;
+    2) say "Nothing changed." ;;
+    *) return 1 ;;
+  esac
 }
 
 # print_worker_alert: the note the worker leaves in data/worker-alert.json when a setup problem (a refused API key, ...) has paused its checks.
@@ -1140,6 +1371,7 @@ cmd_status() {
   else echo "  reader                 $(reader_name)"; fi
   if remote_decider; then echo "  decider                TypeSafe (hosted, anonymized); ./receipts check tests the key"; fi
   if [[ -f data/heartbeat ]]; then echo "last poll: $(cat data/heartbeat)"; fi
+  if [[ -s data/web-settings.json ]]; then echo "Some settings are set on the status page (Settings tab); they win over .env."; fi
   print_worker_alert
   echo "--- recent worker log ---"
   docker logs --tail 60 receipt-worker 2>&1 | quiet | tail -15
@@ -1242,6 +1474,7 @@ Usage: ./receipts <command>
                        one file per item, as {held_back, body}; calls no decider. With a cloud reader it still sends the
                        receipt photos and the name-scan texts to that reader, and needs CLOUD_NAME_SCAN=true)
   trigger-url     the status page link (check now, dry run/live, categories, keywords, Try again) and the webhook URL
+  exclude         pick the Actual category groups (and single categories) receipts never go to; restarts the worker
   describe        write descriptions for categories that have none (add --refresh to rewrite the auto ones). With a cloud reader
                   it lists what would be sent (category names, store names, amounts, your item notes) and asks first; --yes skips the question
   keyword CMD     household keywords: add <phrase> <category> [--at <store>] [--always|--usually] | remove <phrase> [--at <store>] | list | test <item text> [--at <store>]
@@ -1270,6 +1503,7 @@ case "$cmd" in
   mode) cmd_mode "$@" ;;
   update) cmd_update ;;
   replay) one_off replay.js "$@" ;;
+  exclude) cmd_exclude ;;
   describe) cmd_describe "$@" ;;
   item-test) one_off item-test.js "$@" ;;
   keyword) one_off keyword-cli.js "$@" ;;
