@@ -1,10 +1,11 @@
+import { selectionSnapshot } from './receipt-selection.js';
 // Everything the worker does in Actual Budget through @actual-app/api: connect, read categories and transactions,
 // find candidate charges and past purchases, and write splits, categories and notes. Used by match.js, receipt.js and index.js.
 import fs from 'node:fs/promises';
 import { api, apiInfo } from './actual-api.js';
 import { config, inMatchAccounts, log } from './config.js';
 import { TransientError, isTransient } from './errors.js';
-import { payeeScore } from './payee.js';
+import { payeeScore, storeScore } from './payee.js';
 import { dayDiff, isoDay, shiftDay, today as todayIso } from './dates.js';
 import { money, partKey, partNote, stripAnnotations, SPLIT_NOTE_MAX, UNCATEGORIZED } from './reconcile.js';
 import { setRules } from './rules.js';
@@ -352,6 +353,8 @@ const splitKey = (t) => JSON.stringify((t.subtransactions ?? []).map((s) => [s.a
 export function changedSince(matched, fresh) {
   if (!fresh) return 'it is no longer there';
   if ((fresh.account ?? null) !== (matched.account ?? null)) return 'it moved to another account';
+  for (const key of ['date', 'payee', 'imported_payee', 'transfer_id']) if ((fresh[key] ?? null) !== (matched[key] ?? null)) return `its ${key} changed`;
+  if ((fresh.cleared !== false) !== (matched.cleared !== false) || Boolean(fresh.reconciled) !== Boolean(matched.reconciled) || Boolean(fresh.is_child) !== Boolean(matched.is_child)) return 'its cleared, reconciled or split status changed';
   if (fresh.amount !== matched.amount) return 'its amount changed';
   if ((fresh.category ?? null) !== (matched.category ?? null)) return 'its category changed';
   if ((fresh.notes ?? '') !== (matched.notes ?? '')) return 'its notes changed';
@@ -373,9 +376,68 @@ export async function changedMeanwhile(txn) {
   // Closed and off-budget accounts are never read, so a transaction moved there is simply not found. An account outside
   // MATCH_ACCOUNTS is read, but matching would not have offered it.
   let why = changedSince(txn, row?.t ?? null);
+  if (!why && (row.payeeIsTransfer || row.t.transfer_id || row.t.is_child || row.t.cleared === false || row.t.reconciled)) why = 'it is a transfer, pending, reconciled or a split part';
   if (!why && !inMatchAccounts(row.account.name)) why = 'its account is not one of MATCH_ACCOUNTS';
   if (why) log(`  ${CHANGED_MEANWHILE} (${why})`);
   return why;
+}
+
+// ---- Cash purchases (cash.js): the only place the worker creates a transaction, and only when a button on the receipt page says so ----
+
+const DUPLICATE_DAYS = 3; // a transaction of the same amount this close to the purchase date may be the same purchase
+
+/** The open on-budget accounts the worker may read (MATCH_ACCOUNTS when set): [{ id, name }]. Off-budget ones are never read back, so never offered. */
+export async function openAccounts() {
+  return (await api.getAccounts()).filter((a) => !a.closed && !a.offbudget && inMatchAccounts(a.name)).map(({ id, name }) => ({ id, name }));
+}
+
+/**
+ * What the cash page needs from Actual (read only): the chosen account (null when it is not an open one the worker may use), the
+ * payee a new transaction would get (an existing real payee that fits the store, else a new one named like the merchant), and the
+ * transactions in that account for exactly this amount (an outflow of `cents`) within DUPLICATE_DAYS of `date` that no receipt is linked to.
+ */
+export async function cashLookup({ accountName, date, cents, receipt }) {
+  const accounts = await openAccounts();
+  const account = accounts.find((a) => a.name === accountName) ?? null;
+  const payees = (await api.getPayees()).filter((p) => p.name && !p.transfer_acct);
+  const best = payees.map((p) => ({ p, score: storeScore(receipt, [p.name]) })).filter((x) => x.score >= config.match.payeeMinScore).sort((a, b) => b.score - a.score)[0];
+  const name = best ? best.p.name : String(receipt.merchant ?? '').trim().slice(0, 100) || 'Cash purchase';
+  const payee = { id: best?.p.id ?? null, name, isNew: !best };
+  const names = new Map((await api.getPayees()).map((p) => [p.id, p.name]));
+  const duplicates = [];
+  if (account) {
+    for (const t of await api.getTransactions(account.id, shiftDay(date, -DUPLICATE_DAYS), shiftDay(date, DUPLICATE_DAYS))) {
+      if (t.is_child || t.transfer_id || t.amount !== -cents || (t.notes ?? '').includes('#receipt')) continue;
+      duplicates.push({ id: t.id, date: t.date, amount: t.amount, payeeName: names.get(t.payee) ?? null, categoryId: t.category ?? null, isParent: Boolean(t.is_parent), snapshot: selectionSnapshot(t) });
+    }
+  }
+  return { accounts, account, payee, duplicates };
+}
+
+/**
+ * Create the transaction described by `txn` ({ id, date, amount, notes, category | subtransactions, cleared }) in the account, with the payee
+ * (created first when it is new). Actual runs rules on added transactions even with learnCategories / runTransfers off.
+ * The caller verifies the result and repairs categories changed by rules. Returns nothing; the caller reads it back (findById) and checks it.
+ */
+export async function createTransaction(accountId, payee, txn) {
+  const payeeId = payee.id ?? (await api.createPayee({ name: payee.name }));
+  try {
+    await api.addTransactions(accountId, [{ ...txn, account: accountId, payee: payeeId }], { learnCategories: false, runTransfers: false });
+  } catch (err) {
+    // Keep a payee when the add may have succeeded; remove it only after checking all transactions in this account.
+    if (!payee.id) {
+      try {
+        const rows = await api.getTransactions(accountId);
+        if (!rows.some((t) => t.payee === payeeId)) await api.deletePayee(payeeId);
+      } catch { /* An uncertain lookup must never delete a payee that might be in use. */ }
+    }
+    throw err;
+  }
+}
+
+/** Delete a transaction and its split parts (Undo of a created cash purchase). */
+export async function deleteTransactionTree(t) {
+  await api.deleteTransaction(t.id);
 }
 
 /** Sync with the server (when this API can), so what is read next is current. A sync that can't run is an outage: TransientError. */
@@ -394,6 +456,15 @@ export async function findById(id, date) {
   return null;
 }
 
+/** Look up a pending cash creation by its fixed UUID across all accounts and dates before any retry. */
+export async function findCreation(id) {
+  const [accounts, payees] = await Promise.all([api.getAccounts(), payeeTable()]);
+  for (const account of accounts) for (const t of await api.getTransactions(account.id)) {
+    if (t.id === id) return { t, account, payeeName: payees.get(t.payee)?.name ?? null, payeeIsTransfer: payees.get(t.payee)?.transfer ?? false };
+  }
+  return null;
+}
+
 /** What a transaction is as far as the categories go: { category } for one category, { children: [{ amount, category, notes }] } for a split. */
 export const shapeOf = (t) => (t.is_parent
   ? { children: (t.subtransactions ?? []).map((s) => ({ amount: s.amount, category: s.category ?? null, notes: s.notes ?? '' })) }
@@ -405,7 +476,7 @@ export function isWritten(t, want) {
   if (!t || (t.notes ?? '') !== (want.notes ?? '')) return false;
   if (want.children) {
     const have = t.is_parent ? (t.subtransactions ?? []) : [];
-    return have.length === want.children.length && [...have.map(childKey)].sort().join('\n') === [...want.children.map(childKey)].sort().join('\n');
+    return t.is_parent && !t.category && have.length === want.children.length && [...have.map(childKey)].sort().join('\n') === [...want.children.map(childKey)].sort().join('\n');
   }
   return !t.is_parent && (t.subtransactions ?? []).length === 0 && (t.category ?? null) === (want.category ?? null);
 }
@@ -443,6 +514,19 @@ export async function rewrite(txn, want) {
     }
   }
   throw new WriteMismatch('Actual did not end up with the categories that were written, so the charge may be half changed: check it in Actual');
+}
+
+/**
+ * Change only the notes of a transaction (a split's children and categories are left alone) and read it back: the notes must be
+ * the new ones and the category or split exactly as before, else WriteMismatch.
+ */
+export async function rewriteNotes(txn, notes) {
+  await api.updateTransaction(txn.id, { notes });
+  const now = (await findById(txn.id, txn.date))?.t;
+  if (!now || (now.notes ?? '') !== notes || JSON.stringify(shapeOf(now)) !== JSON.stringify(shapeOf(txn))) {
+    throw new WriteMismatch('Actual did not end up as expected after changing the note, so the charge may be half changed: check it in Actual');
+  }
+  return now;
 }
 
 /** Give the whole transaction one category. */

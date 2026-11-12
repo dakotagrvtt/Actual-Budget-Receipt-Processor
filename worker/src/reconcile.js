@@ -112,10 +112,42 @@ export function foldDiscounts(receipt) {
     }
     target.amount = (cents(target.amount) - off) / 100;
     target.discountCents = (target.discountCents ?? 0) + off;
+    if (line.flippedSign) target.flippedSign = true; // the reader gave the discount a plus sign (flipNumberRefs)
     folded.push({ line: line.description, into: target.description, cents: off });
   });
   receipt.items = kept;
   return folded;
+}
+
+/**
+ * A discount line made of only item numbers ("0000394696 /56366") that the reader gave a plus sign, on a receipt whose
+ * items exceed the subtotal by more than allocate tolerates: flip it to negative so foldDiscounts can fold it.
+ * Only while it helps: the flip must bring the items closer to the subtotal and may overshoot it by 2 cents at most
+ * (2 x amount <= gap + 2). The best candidate goes first (the line whose flip leaves the items nearest the subtotal); more
+ * than one only if each still fits those limits. Not on a return, not without a subtotal, and not when the prices look tax-included
+ * (items near the total, or a gap equal to the tax: the same guards as fixTaxGap). Marks the line `flippedSign`.
+ * Mutates the receipt; returns [{ line, cents }].
+ */
+export function flipNumberRefs(receipt) {
+  if (receipt.is_return || receipt.subtotal == null || !Array.isArray(receipt.items)) return [];
+  const sub = cents(receipt.subtotal);
+  const flipped = [];
+  for (;;) {
+    const itemsC = receipt.items.reduce((n, x) => n + cents(x.amount), 0);
+    const gap = itemsC - sub;
+    if (gap <= drift(sub)) break;
+    if (receipt.total != null && Math.abs(itemsC - cents(receipt.total)) <= drift(cents(receipt.total))) break; // tax-included prices
+    if (receipt.tax != null && Math.abs(gap - cents(receipt.tax)) <= 2) break;
+    const best = receipt.items
+      .filter((it) => cents(it.amount) > 0 && NUMBER_REF.test(String(it.description).trim()) && 2 * cents(it.amount) <= gap + 2 && Math.abs(gap - 2 * cents(it.amount)) < gap)
+      .sort((a, b) => Math.abs(gap - 2 * cents(a.amount)) - Math.abs(gap - 2 * cents(b.amount)))[0];
+    if (!best) break;
+    const c = cents(best.amount);
+    best.amount = -c / 100;
+    best.flippedSign = true;
+    flipped.push({ line: best.description, cents: c });
+  }
+  return flipped;
 }
 
 /**
@@ -136,9 +168,12 @@ export function foldDiscounts(receipt) {
  * Anything else changes nothing: items under the subtotal, an item without a code, a gap that fits no group, an "exact"
  * group whose rounding tolerance could hide the gap, or a corrected group that would drop to 0 or less.
  *
+ * `lock` (optional Set of items): amounts someone set by hand. They are never lowered: the gap is spread over the group's other items,
+ * and when there are none, or one would drop to 0 or below, nothing is changed.
+ *
  * Mutates the receipt. Returns { cents: items minus subtotal, codes: the line codes whose items were changed }, or null.
  */
-export function fixTaxGap(receipt) {
+export function fixTaxGap(receipt, { lock = null } = {}) {
   if (!config.taxByItem || receipt.is_return || receipt.subtotal == null || receipt.tax == null || !Array.isArray(receipt.tax_lines)) return null;
   const sum = (a) => a.reduce((x, y) => x + y, 0);
   const itemsC = sum(receipt.items.map((it) => cents(it.amount)));
@@ -179,15 +214,48 @@ export function fixTaxGap(receipt) {
   else if (bad.length >= 2 && bad.every((g) => g.base) && bad.every((g) => g.off > 0) && Math.abs(sum(bad.map((g) => g.off)) - gap) <= 2) fixes = bad.map((g, i) => [g, i === 0 ? g.off + gap - sum(bad.map((x) => x.off)) : g.off]);
   else return null;
   if (fixes.some(([g, c]) => g.net - c <= 0)) return null;
-  for (const [g, c] of fixes) {
-    const own = g.items.filter((it) => cents(it.amount) > 0);
-    apportion(own.map((it) => cents(it.amount)), c).forEach((share, k) => {
+  const plans = fixes.map(([g, c]) => {
+    const own = g.items.filter((it) => cents(it.amount) > 0 && !lock?.has(it));
+    return { own, shares: own.length ? apportion(own.map((it) => cents(it.amount)), c) : [] };
+  });
+  if (lock && plans.some((p) => !p.own.length || p.own.some((it, k) => cents(it.amount) - p.shares[k] <= 0))) return null;
+  for (const { own, shares } of plans) {
+    shares.forEach((share, k) => {
       own[k].amount = (cents(own[k].amount) - share) / 100;
       own[k].gapCents = (own[k].gapCents ?? 0) + share;
     });
   }
   receipt.taxGap = { cents: gap, codes: fixes.map(([g]) => g.code) };
   return receipt.taxGap;
+}
+
+/**
+ * What fixTaxGap did, in terms a person can check: { cents (the gap it spread), names (the items that got a share), savingsCents (the
+ * savings the receipt prints, null when none or an older reading), matches (the printed savings equal the gap, within 1 cent) },
+ * or null when no gap was spread. A gap that equals the printed savings is almost surely a discount line the reader skipped.
+ * Works on a saved receipt too (older summaries have no `savings`).
+ */
+export function gapSummary(receipt) {
+  const gap = Math.round(Number(receipt?.taxGap?.cents));
+  if (!(gap > 0) || !Array.isArray(receipt.items)) return null;
+  const names = [...new Set(receipt.items.filter((it) => Math.round(Number(it?.gapCents) || 0) > 0).map((it) => String(it.description)))]; // each name once
+  if (!names.length) return null;
+  const s = receipt.savings == null || receipt.savings === '' ? NaN : Number(receipt.savings);
+  const savingsCents = Number.isFinite(s) && s > 0 ? Math.round(s * 100) : null;
+  return { cents: gap, names, savingsCents, matches: savingsCents !== null && Math.abs(savingsCents - gap) <= 1 };
+}
+
+/**
+ * A doubt (as a list of 0 or 1 sentences) for a receipt whose gap fixTaxGap spread over items that are not all in one category, when the
+ * printed savings equal the gap: the missed discount probably belongs to one of them, so the split between categories may be wrong.
+ * Call it after the items have their categories. When the gap items share one category, the category totals are right either way.
+ */
+export function gapSplitDoubt(receipt) {
+  const g = gapSummary(receipt);
+  if (!g?.matches) return [];
+  const shared = receipt.items.filter((it) => Math.round(Number(it.gapCents) || 0) > 0);
+  if (new Set(shared.map((it) => it.category ?? UNCATEGORIZED)).size < 2) return [];
+  return [`the receipt prints savings of ${money(g.savingsCents)}, matching the ${money(g.cents)} the items were over the subtotal; the worker took it off ${shared.map((it) => it.description).join(', ')}, which are in different categories, but a discount line was probably missed, so the split between categories may be wrong`];
 }
 
 /** The item a discount line is about (see foldDiscounts), or null. `before` = items already kept, `after` = items still to come. */
@@ -541,6 +609,20 @@ export const mergeParts = (allocation, preferCategoryId) => mergeSmallParts(allo
 /** Paid in cash: the payment line says so. Card receipts print "Tendered" too, so cash_tendered alone isn't enough. */
 export const paidCash = (receipt) => /\bcash\b(?!\s*back)/.test(String(receipt.payment_method ?? '').toLowerCase());
 
+/** A cash purchase (not a return, with a readable positive total): there is no bank charge to match, so a person can create one from the receipt's page. */
+export const cashPurchase = (receipt) => paidCash(receipt) && receipt.is_return !== true && cents(receipt.total) > 0;
+
+/**
+ * Why a receipt in Needs review has no bank charge to be matched or fixed against: 'cash' (a cash purchase) or 'return' (a refund), else null.
+ * From the saved summary alone (older ones too). Such a receipt can be archived once you have dealt with it by hand.
+ */
+export function noChargeKind(summary) {
+  const r = summary?.receipt;
+  if (!r || typeof r !== 'object' || summary.transaction || summary.plan?.applied || summary.alreadyApplied) return null;
+  if (r.is_return === true || cents(r.total) < 0) return 'return';
+  return cashPurchase(r) ? 'cash' : null;
+}
+
 /**
  * On cash receipts the reader sometimes takes the cash handed over as the total (paid $15.00 for 14.53). When
  * subtotal + tax + tip doesn't equal the total and the total looks like the cash tendered, use the computed amount.
@@ -555,7 +637,7 @@ export function fixCashTotal(receipt) {
   if (Math.abs(computed - total) <= 1) return null;
   if (!paidCash(receipt)) return null;
   const isTendered = receipt.cash_tendered != null && cents(receipt.cash_tendered) === total;
-  if (!isTendered && !(total > computed)) return null;
+  if (!isTendered || computed <= 0 || total <= computed) return null;
   receipt.total = computed / 100;
   return `total read as ${money(total)}, which looks like the cash handed over; using subtotal + tax = ${money(computed)}`;
 }

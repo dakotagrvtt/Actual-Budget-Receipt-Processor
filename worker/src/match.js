@@ -140,9 +140,9 @@ export function unmatchable(receipt) {
   const total = cents(receipt.total);
   if (receipt.is_return === true || total < 0) return "this is a return/refund receipt; refunds aren't matched yet";
   if (!(total > 0)) return 'total is missing or not positive';
-  // Cash purchases have no bank charge; the worker never creates transactions, so say so plainly.
+  // Cash purchases have no bank charge: a person can create the transaction from the receipt's page (cash.js), never the worker by itself.
   if (paidCash(receipt)) {
-    return `paid in cash${receipt.cash_tendered != null ? ` (${money(cents(receipt.cash_tendered))} handed over)` : ''}, so there's no bank charge of ${money(total)} to match; enter it in Actual by hand`;
+    return `paid in cash${receipt.cash_tendered != null ? ` (${money(cents(receipt.cash_tendered))} handed over)` : ''}, so there's no bank charge of ${money(total)} to match; use Create in Actual on this receipt's page, or Archive it if you entered it by hand`;
   }
   return null;
 }

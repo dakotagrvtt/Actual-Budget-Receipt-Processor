@@ -30,8 +30,9 @@ export async function downloadListed(c, item) {
  *  use `other` instead. Returns the path it ended up at. With `etag` (the one the listing gave), the file is only moved while
  *  it still has it, else FileChangedError: the server answers 412 both for a name taken and for a changed file, so a second
  *  412 on the unused name `other` is taken to mean the file changed. */
-export async function moveKeepingBoth(c, from, dest, other, etag) {
-  const options = etag ? { ...NO_OVERWRITE, headers: { ...NO_OVERWRITE.headers, ...ifMatch(etag) } } : NO_OVERWRITE;
+export async function moveKeepingBoth(c, from, dest, other, etag, extra = {}) {
+  const base = etag ? { ...NO_OVERWRITE, headers: { ...NO_OVERWRITE.headers, ...ifMatch(etag) } } : NO_OVERWRITE;
+  const options = Object.keys(extra).length ? { ...base, ...extra } : base; // extra: e.g. a timeout signal
   try {
     await c.moveFile(from, dest, options);
     return dest;

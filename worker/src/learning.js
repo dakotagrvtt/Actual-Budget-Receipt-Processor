@@ -36,10 +36,12 @@ const sourceOf = (it) => {
 };
 // `part` = the allocation part the item is in. An item folded into another category's part (a small amount merged) keeps
 // the category it was given in `cat`, which is what the worker really said about it.
-const snapItem = (it, part) => {
+const snapItem = (it, part, at = -1) => {
   const merged = it.category != null && it.category !== part.label;
   return {
     d: it.description,
+    ...(at >= 0 ? { i: at } : {}), // the item's place in the receipt's list, so the receipt page can match it (two items may share a name)
+    ...(it.addedOnPage ? { addedOnPage: true } : {}), // a line added on the receipt page: never a lesson
     plain: it.plain && it.plain.toLowerCase() !== it.description.toLowerCase() ? it.plain : null,
     src: sourceOf(it),
     ...(Number.isFinite(cents(it.amount)) ? { cents: cents(it.amount) } : {}), // the item's own price, for a learned keyword's item limit
@@ -61,7 +63,7 @@ export function buildSnapshot({ txn, item, receipt, allocation, action, review }
     label: a.categoryId ? a.label : null,
     cents: a.cents,
     note: action === 'split' ? partNote(a, ', ', SPLIT_NOTE_MAX) : partNote(a, '; ', ITEMS_NOTE_MAX),
-    items: (a.refs ?? []).filter(Boolean).map((r) => snapItem(r, a)),
+    items: (a.refs ?? []).filter(Boolean).map((r) => snapItem(r, a, receipt.items?.indexOf(r) ?? -1)),
   }));
   return { txnId: txn.id, file: item.basename, date: txn.date, payee: receipt.payee ?? null, store: receipt.store ?? null, amountCents: -txn.amount, action, review: Boolean(review), parts };
 }
@@ -110,6 +112,7 @@ const totalItems = (entry) => entry.parts.reduce((n, p) => n + p.items.length, 0
  * agree with what the worker said.
  */
 function fix(item, part, filed, kind, group, solo) {
+  if (item.addedOnPage) return null; // you added it on the receipt page: not the worker's word, so nothing to learn
   const said = item.merged ? (item.cat === UNCATEGORIZED ? null : item.cat) : part.label;
   if (said === filed) return null;
   return { item, said, mergedInto: item.merged ? part.label : null, filed, kind, group, solo, partNote: part.note, partItems: part.items.length, partCents: part.cents };
@@ -122,11 +125,33 @@ function fix(item, part, filed, kind, group, solo) {
  */
 export function judge(entry, t, label) {
   if (!t) return { drop: 'the charge is gone' };
-  if (-t.amount !== entry.amountCents) return { drop: 'the amount changed' };
-  if (!actual.hasTag(t.notes ?? '', `#receipt ${entry.file}`)) return { drop: 'the #receipt tag was removed' };
+  // Whatever else happened, a flagged charge whose notes no longer carry #review has been looked at by you (even if you rewrote the notes).
+  const looked = { reviewed: Boolean(entry.review) && !/#review\b/.test(t.notes ?? ''), review: /#review\b/.test(t.notes ?? '') };
+  if (-t.amount !== entry.amountCents) return { drop: 'the amount changed', ...looked };
+  if (!actual.hasTag(t.notes ?? '', `#receipt ${entry.file}`)) return { drop: 'the #receipt tag was removed', ...looked };
   const fixes = (t.is_parent ? fixesInSplit(entry, t, label) : fixesInSingle(entry, t, label)).filter(Boolean);
-  const verified = entry.review && !/#review\b/.test(t.notes ?? '') && fixes.length === 0;
-  return { fixes, verified };
+  const noReview = !/#review\b/.test(t.notes ?? '');
+  const verified = entry.review && noReview && fixes.length === 0;
+  // Reviewed: it was flagged and #review is gone, whatever else was changed (verified/corrected keep their own meaning: provenance, lessons).
+  const reviewed = Boolean(entry.review) && noReview;
+  const restructured = t.is_parent ? splitRestructured(entry, t, label) : entry.action === 'split' && entry.parts.length > 1;
+  return { fixes, verified, reviewed, restructured, whole: !t.is_parent && fixes.length ? label(t.category) ?? null : null, review: !noReview };
+}
+
+/** Do the children of a split no longer line up one to one with the parts the worker filed? */
+function splitRestructured(entry, t, label) {
+  const children = (t.subtransactions ?? []).map((c) => ({ c, key: partKey(c.notes), cents: -c.amount }));
+  return matchParts(entry, children, label).at.size !== entry.parts.length || children.length !== entry.parts.length;
+}
+
+const DROPS = { 'the charge is gone': 'the charge is not in Actual any more', 'the amount changed': 'its amount was changed', 'the #receipt tag was removed': 'its #receipt note was removed' };
+
+/** What the page should know about a judged charge (see memory.loadSeen); `j` is the answer of judge(). */
+export function seenRecord(j, now = new Date()) {
+  const at = now.toISOString();
+  if (j.drop) return { at, changed: DROPS[j.drop] ?? j.drop, items: [], whole: null, review: j.review ?? null, reviewed: Boolean(j.reviewed) };
+  const items = [...new Map(j.fixes.map((f) => [f.item.i ?? normalize(f.item.d), { ...(f.item.i != null ? { i: f.item.i } : {}), d: f.item.d, now: f.filed, said: f.said }])).values()];
+  return { at, changed: j.restructured && !j.whole ? 'its split was changed, so the items can\'t be matched' : null, items, whole: j.whole, review: j.review, reviewed: Boolean(j.reviewed) };
 }
 
 // One category for the whole charge now. Several items moved together say little about each; a lone item is a plain correction.
@@ -275,6 +300,12 @@ export async function sweep({ id2label, now = new Date(), recorded = false }) {
     for await (const { t } of actual.budgetTransactions(shiftDay(oldest, -START_BEFORE_DAYS), end)) if (!t.is_child) txns.set(t.id, t);
     const label = (id) => (id == null ? null : id2label.get(id));
     const judged = entries.map((e) => ({ e, j: judge(e, txns.get(e.txnId), label) }));
+    // What Actual has for each of them, for the receipt page. Never stops the sweep.
+    try {
+      await memory.recordSeen(Object.fromEntries(judged.map(({ e, j }) => [e.txnId, seenRecord(j, now)])));
+    } catch (err) {
+      log(`  learning: could not save what Actual has now: ${err.message}`);
+    }
     const kept = judged.filter(({ j }) => !j.drop);
     for (const { e, j } of judged) if (j.drop) log(`  learning: no longer watching ${e.file} (${j.drop})`);
     result.dropped = judged.length - kept.length;

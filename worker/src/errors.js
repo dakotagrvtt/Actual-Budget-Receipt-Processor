@@ -86,6 +86,12 @@ export function isTransient(err) {
   return false;
 }
 
+/**
+ * A real outage (a server down, busy or unreachable): says nothing about this receipt, so nothing is counted. A timeout of our own or a
+ * counted paid-call failure (a cloud reader timing out on this photo, possibly billed) is not one: it may be about this receipt.
+ */
+export const isOutage = (err) => isTransient(err) && countedBy(err) === null && (err.service === 'nextcloud' || !isClientTimeout(err));
+
 /** True if the error is a wrong setup (see SetupError): stop the cycle, count no attempt, tell the user. */
 export function isSetupProblem(err) {
   for (let e = err; e; e = e.cause) if (e.pauses === true) return true;

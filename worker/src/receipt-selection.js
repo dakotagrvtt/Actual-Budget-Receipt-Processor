@@ -1,0 +1,2 @@
+// The fields an explicit transaction selection depends on. Shared by preview and the final write guard.
+export const selectionSnapshot = (t) => ({ id: t.id, account: t.account ?? null, date: t.date, payee: t.payee ?? null, amount: t.amount, category: t.category ?? null, notes: t.notes ?? '', cleared: t.cleared !== false, reconciled: Boolean(t.reconciled), transfer: t.transfer_id ?? null, isParent: Boolean(t.is_parent), children: (t.subtransactions ?? []).map((s) => [s.id, s.amount, s.category ?? null, s.notes ?? '']) });

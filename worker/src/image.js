@@ -51,6 +51,39 @@ export async function prepareImages(buffer, filename, maxSide, opts = {}) {
   }
 }
 
+// Archiving (archive.js) saves a checked receipt's photo again as a smaller JPEG. PDFs are not in this list: they move unchanged.
+export const SHRINKABLE = /\.(jpe?g|png|webp|heic|heif)$/i;
+const ARCHIVE_MAX_SIDE = 2400;
+const ARCHIVE_QUALITY = 82;
+
+/**
+ * The photo as a JPEG for the archive: turned upright, metadata (including the phone's GPS location) removed, at most
+ * `maxSide` pixels on the long side, at `quality`. HEIC goes through heif-convert first, as prepareImages does. Returns the
+ * JPEG bytes; throws when the converter fails or times out (the caller then moves the original as it is).
+ */
+export async function shrinkPhoto(buffer, filename, { maxSide = ARCHIVE_MAX_SIDE, quality = ARCHIVE_QUALITY } = {}) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'receipt-'));
+  try {
+    const ext = path.extname(filename).toLowerCase();
+    if (!SHRINKABLE.test(ext)) throw new Error(`${filename} is not a photo type that can be shrunk`);
+    const src = path.join(dir, `input${ext}`);
+    await fs.writeFile(src, buffer);
+    let page = src;
+    if (ext === '.heic' || ext === '.heif') {
+      await run('heif-convert', [src, path.join(dir, 'heic.jpg')]);
+      const primary = primaryHeic(await fs.readdir(dir));
+      if (!primary) throw new Error(`could not convert ${filename} to an image`);
+      page = path.join(dir, primary);
+    }
+    const out = path.join(dir, 'archived.jpg');
+    // [0]: only the first frame of an animated or multi-image file. A transparent PNG gets a white background (JPEG has no transparency).
+    await run('convert', [`${page}[0]`, '-auto-orient', '-strip', '-background', 'white', '-alpha', 'remove', '-resize', `${maxSide}x${maxSide}>`, '-quality', String(quality), out]);
+    return await fs.readFile(out);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
 async function listWithPrefix(dir, prefix) {
   return (await fs.readdir(dir)).filter((f) => f.startsWith(prefix)).sort().map((f) => path.join(dir, f));
 }

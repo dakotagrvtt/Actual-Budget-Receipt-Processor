@@ -1,6 +1,9 @@
+import './private-umask.js';
+import { legacyPending, recoverLegacyRecords } from './legacy-recovery.js';
+import { recoverCashCreations } from './cash.js';
+import { finishPageFiling } from './filing.js';
 // The receipt worker (the Docker entry point): every poll it lists the Nextcloud inbox, runs each due receipt through
 // receipt.js, files it, and records progress in state.json (state.js) so nothing is done twice. Importing it starts nothing.
-import './private-umask.js';
 import { config, log, reloadConfig } from './config.js';
 import * as nextcloud from './nextcloud.js';
 import * as actual from './actual.js';
@@ -8,10 +11,14 @@ import { waitForModel } from './llm.js';
 import { receiptLabels } from './categorize.js';
 import { describeMissing, autoDescribeAllowed } from './categories.js';
 import { rememberCategories } from './known-categories.js';
+import { rememberAccounts } from './known-accounts.js';
 import { loadAliases } from './payee.js';
 import { processReceipt } from './receipt.js';
 import * as learning from './learning.js';
-import { loadState, saveState, stateKey, parseStateKey, isDue, heartbeat, syncForgotten, failedEntry, giveUpEntry, replacedEntry, MAX_TRANSIENT_CYCLES, MAX_IMAGE_SKIPS } from './state.js';
+import { autoArchive } from './archive.js';
+import { reviewCause } from './review-cause.js';
+import { cardOf } from './archive-rules.js';
+import { loadState, saveState, stateKey, parseStateKey, isDue, resolutionBlocked, heartbeat, syncForgotten, failedEntry, giveUpEntry, replacedEntry, MAX_TRANSIENT_CYCLES, MAX_IMAGE_SKIPS } from './state.js';
 import { refreshMode, resolveDryRun, envDisagreement, mustStopForDry } from './settings.js';
 import { startTriggerServer } from './trigger.js';
 import { saveDrySummary } from './dry-summaries.js';
@@ -21,6 +28,7 @@ import { classifyFailure } from './failure.js';
 import { repairPermissions } from './private-files.js';
 import path from 'node:path';
 import { exclusive, drain } from './session-lock.js';
+import { filedRereads, dropStaleRereads, rereadAllFiled } from './reread.js';
 import { reportSetupProblem, clearSetupProblem, clearSetupProblemIfQuiet, useAlertFile, beginCycle } from './alert.js';
 
 const MAX_ATTEMPTS = 3; // failed attempts at one receipt before it goes to Needs review
@@ -44,13 +52,25 @@ const upgrade = createUpgradeWatcher({
 // Set by SIGTERM: finish the receipt in hand, start no new one, then exit (see main).
 let stopping = false;
 
+const validLastmod = (v) => { const d = v ? new Date(v) : null; return d && !Number.isNaN(d.getTime()) ? d.toISOString() : null; };
+
 /** Move a receipt that's been decided (and maybe applied) out of the inbox, then mark it done. */
-async function fileReceipt(item, key, state, { result, summary, folder, applied }) {
+export async function fileReceipt(item, key, state, { result, summary, folder, applied }) {
   if (config.dryRun && summary) await saveDrySummary(key, summary); // lets the status page show the reading
-  const filedAs = !config.dryRun && folder ? await nextcloud.fileInto(item, folder, summary) : undefined;
+  let filedAs;
+  if (!config.dryRun && folder) {
+    const filing = state[key]?.filing ?? { kind: 'worker', from: item.filename, dest: path.posix.join(folder, item.basename), etag: item.etag, summary };
+    state[key] = { ...state[key], done: false, result, folder, summary, ...(applied ? { applied } : {}), filing };
+    await saveState(state);
+    filedAs = await nextcloud.fileInto(item, folder, summary, { intent: filing, checkpoint: async (next) => { state[key].filing = next; await saveState(state); } });
+  }
   // filedAs: the exact path it was filed under, so "Try again" on the status page moves back this very file.
   // applied stays on the finished entry: Actual was changed, so the status page must never offer to requeue it.
-  state[key] = { done: true, result, at: new Date().toISOString(), ...(filedAs ? { filedAs } : {}), ...(applied ? { applied } : {}) };
+  // card: the store and total, so the status list can show them without opening the summary.
+  const pending = state[key];
+  state[key] = { done: true, result, at: new Date().toISOString(), ...(validLastmod(item.lastmod) ? { lastmod: validLastmod(item.lastmod) } : {}), ...(filedAs ? { filedAs } : {}), ...(applied ? { applied } : {}), ...(summary ? { card: cardOf(summary), review: reviewCause({ result, applied, done: true }, summary) } : {}) };
+  try { await saveState(state); }
+  catch (err) { if (pending) state[key] = pending; else delete state[key]; throw err; }
 }
 
 /** The file was replaced in the inbox while this receipt was processed: forget this version (or, if Actual was changed for it,
@@ -71,6 +91,7 @@ async function failAttempt(item, key, state, entry, message) {
   state[key] = failedEntry(state[key], attempts, message);
   if (attempts >= MAX_ATTEMPTS) {
     const failed = giveUpEntry(item.basename, attempts, message, applied);
+    if (state[key].receiptFields && state[key].reading?.receipt) failed.summary.receipt = { ...structuredClone(state[key].reading.receipt), ...state[key].receiptFields, manualFields: Object.keys(state[key].receiptFields) };
     try {
       await fileReceipt(item, key, state, failed);
     } catch (moveErr) {
@@ -89,7 +110,7 @@ function dropDepartedWaiting(state, inbox) {
   const inInbox = new Set(inbox.map(stateKey));
   let dropped = false;
   for (const [k, v] of Object.entries(state)) {
-    if (v.waiting && !v.done && parseStateKey(k).dry === config.dryRun && !inInbox.has(k)) {
+    if (v.waiting && !v.done && !v.resolutionPending && parseStateKey(k).dry === config.dryRun && !inInbox.has(k)) {
       delete state[k];
       dropped = true;
     }
@@ -125,7 +146,7 @@ async function describeNewCategories(labels) {
 }
 
 /** The state entry for a receipt whose bank charge hasn't posted yet: it stays in the inbox and is re-checked later. */
-function waitingEntry(entry, waiting, lastmod) {
+export function waitingEntry(entry, waiting, lastmod) {
   const modified = lastmod ? new Date(lastmod) : null; // kept so the status page can work out the date used (old entries have none)
   const saved = modified && !Number.isNaN(modified.getTime()) ? modified.toISOString() : entry.lastmod;
   const nextCheck = Math.min(Date.now() + config.match.recheckMinutes * MS_PER_MINUTE, Date.parse(waiting.until));
@@ -133,6 +154,10 @@ function waitingEntry(entry, waiting, lastmod) {
     done: false,
     attempts: entry.attempts,
     reading: entry.reading,
+    ...(entry.receiptFields ? { receiptFields: entry.receiptFields } : {}),
+    ...(entry.reread ? { reread: entry.reread } : {}), // a re-read that failed in a way worth another try
+    ...(entry.rereadNote ? { rereadNote: entry.rereadNote } : {}),
+    ...(entry.previousReading ? { previousReading: entry.previousReading, rereadAt: entry.rereadAt } : {}), // for "Use old reading" on the receipt page (reread.js)
     ...(saved ? { lastmod: saved } : {}),
     waiting: { ...waiting, since: entry.waiting?.since ?? new Date().toISOString(), nextCheck: new Date(nextCheck).toISOString() },
     result: 'waiting for the bank charge',
@@ -143,6 +168,7 @@ function waitingEntry(entry, waiting, lastmod) {
 /** Decide what an error from one receipt means (failure.js) and record it. Returns what the cycle does next:
  *  { troubles: the updated paid-call failure count, stop: end this check, setup: a setup problem ended it }. */
 async function handleReceiptError(err, item, key, state, entry, readerTroubles) {
+  if (state[key]?.filing) { log(`  filing interrupted (${err.message}); kept for the next check`); return { troubles: readerTroubles, stop: true }; }
   const f = classifyFailure(err, state[key] ?? entry, readerTroubles);
   const next = { troubles: f.troubles, stop: f.stop, setup: false };
   if (f.kind === 'setup') {
@@ -176,23 +202,48 @@ async function handleReceiptError(err, item, key, state, entry, readerTroubles) 
   return next;
 }
 
+export async function recoverFilings(state, nc = nextcloud) {
+  // Finish file/summary writes even when the photo has already left Inbox. Never repeat an Actual write.
+  if (!config.dryRun) for (const [key, entry] of Object.entries(state).filter(([, e]) => e.filing || (!e.done && e.folder && e.summary)).slice(0, 10)) {
+    try {
+      if (entry.filing?.kind === 'page') { await finishPageFiling(key, entry, nc); state = await loadState(); }
+      else { const file = parseStateKey(key).file; await fileReceipt({ filename: file, basename: path.posix.basename(file), etag: entry.filing?.etag ?? key.slice(key.lastIndexOf('@') + 1), lastmod: entry.lastmod }, key, state, entry); }
+    } catch (err) { state = await loadState(); log(`filing will retry: ${err.message}`); break; }
+  }
+  return state;
+}
+
 async function cycle({ recheckAll = false } = {}) {
   beginCycle();
-  const state = await loadState();
+  let state = await loadState();
+  state = await recoverFilings(state);
   syncForgotten(state);
+  // Backfill only a small review backlog during the worker check, never while rendering the Status page.
+  const missing = Object.entries(state).filter(([, e]) => e.done && !e.archived && !e.reviewed && !e.manualLink?.keep && !e.review && /review|failed/.test(e.result ?? '') && e.filedAs).slice(0, 10);
+  if (missing.length) {
+    const summaries = await Promise.allSettled(missing.map(([, e]) => nextcloud.readSummary(e.filedAs)));
+    let updated = false;
+    summaries.forEach((answer, i) => { if (answer.status === 'fulfilled' && answer.value) { const e = missing[i][1]; e.review = reviewCause(e, answer.value); updated = true; } });
+    if (updated) await saveState(state);
+  }
+  await nextcloud.sweepUploads().catch((err) => log(`could not clear old temporary upload files: ${err.message}`)); // leftovers of uploads from the status page that never finished
   const inbox = await nextcloud.listInbox();
   if (dropDepartedWaiting(state, inbox)) await saveState(state);
   const now = Date.now();
-  const todo = inbox.filter((item) => isDue(state[stateKey(item)], now, recheckAll));
+  const todo = inbox.filter((item) => !resolutionBlocked(state, item) && !state[stateKey(item)]?.filing && isDue(state[stateKey(item)], now, recheckAll));
   // Time to look at the charges we changed, to see which you corrected (learning.js)? Opens Actual even with an empty inbox.
+  // "Read again" asked on a receipt's page: ones still in the inbox are in `todo` (isDue); filed ones are read after them (reread.js).
+  const filed = filedRereads(state);
+  if (dropStaleRereads(state, new Set(inbox.map(stateKey)))) await saveState(state);
   const sweepDue = await learning.isDue().catch((err) => log(`learning: could not check the watch list: ${err.message}`));
-  if (todo.length === 0 && !sweepDue) return;
+  const cashPending = !config.dryRun && Object.values(state).some((e) => e.creating?.context || legacyPending(e));
+  if (todo.length === 0 && !sweepDue && filed.length === 0 && !cashPending) return;
   // Written down now, before anything that can fail (upgrade check, opening Actual, the sweep): a failure then waits longer.
   if (sweepDue) await learning.recordFailedAttempt().catch((err) => log(`learning: could not note the attempt: ${err.message}`));
   if (todo.length > 0) log(`${todo.length} receipt(s) to process${config.dryRun ? ' (dry run)' : ''}`);
 
   // Receipts already decided only need moving; anything else needs Actual (and maybe the model).
-  const needsActual = sweepDue || todo.some((item) => !state[stateKey(item)]?.folder);
+  const needsActual = cashPending || sweepDue || filed.length > 0 || todo.some((item) => !state[stateKey(item)]?.folder);
   let labels = null;
   let modelChecked = false;
   const ctx = {
@@ -214,11 +265,14 @@ async function cycle({ recheckAll = false } = {}) {
     await actual.open();
   }
   try {
+    if (cashPending) { await recoverLegacyRecords(state, { actual, nextcloud }); state = await loadState(); await recoverCashCreations(state, { actual, nextcloud }); state = await loadState(); }
     if (needsActual) {
       const rows = await actual.spendingCategories();
       labels = actual.labelsOf(rows);
       // The Categories tab lists every category from this, with or without a description. Never blocks a receipt.
       await rememberCategories(rows).catch((err) => log(`could not save the category list for the status page: ${err.message}`));
+      // The Settings tab offers these for "Cash purchases go to". Never blocks a receipt.
+      await rememberAccounts(await actual.openAccounts()).catch((err) => log(`could not save the account list for the status page: ${err.message}`));
       if (todo.length > 0) await describeNewCategories(labels);
       // Before the receipts: what you corrected since last time may already help with them. Never blocks a receipt.
       if (sweepDue) {
@@ -231,6 +285,7 @@ async function cycle({ recheckAll = false } = {}) {
     }
     let processed = 0;
     let stoppedBySetup = false;
+    let stoppedByOutage = false; // a paid call or the server failed in a way that says to stop this check
     let readerTroubles = 0; // receipts in this check that a paid call (cloud reader, hosted decider) failed on, in a countable way
     for (const item of todo) {
       if (stopping) {
@@ -282,11 +337,29 @@ async function cycle({ recheckAll = false } = {}) {
       }
       await saveState(state);
       await heartbeat();
-      if (outage) break;
+      if (outage) {
+        stoppedByOutage = true;
+        break;
+      }
     }
+    // Filed receipts to read again: only the reading in their summary changes, never Actual. Not after an outage that stopped the inbox
+    // (the model server is probably asleep): they wait for the next check.
+    if (!stoppedByOutage && !stoppedBySetup) await rereadAllFiled(state, filed, { labels, ctx, save: saveState, beat: heartbeat, stop: () => stopping || mustStopForDry() });
     if (processed > 0 && !stoppedBySetup) await clearSetupProblemIfQuiet();
   } finally {
     if (needsActual) await actual.close();
+  }
+}
+
+/** After a check: archive Done receipts that are ARCHIVE_AFTER_DAYS old (off by default). Never fails the check: a failure is logged. */
+async function archiveDone() {
+  if (config.dryRun || !(config.archive.afterDays > 0)) return; // (autoArchive also honours a pending switch to dry run)
+  try {
+    const state = await loadState(); // the check has saved its own; this edits only the archived entries and saves them
+    syncForgotten(state);
+    await autoArchive(state, { save: saveState });
+  } catch (err) {
+    log(`archive: skipped this time (${err.message})`);
   }
 }
 
@@ -328,15 +401,18 @@ async function main() {
   });
   startTriggerServer(trigger);
   while (!stopping) {
-    reloadConfig(); // settings changed on the status page's Settings tab apply here, at the start of a check, never mid-check
-    refreshMode(); // the status page / ./receipts mode may have changed it; only ever between cycles
     await heartbeat();
     try {
       // Retried every cycle, so a Nextcloud outage at startup doesn't stop the worker.
-      if (!config.dryRun) await nextcloud.ensureFolders();
+      // Folders and settings are handled under the same session lock as page saves below.
       const opts = { recheckAll };
       recheckAll = false;
-      await exclusive(() => cycle(opts)); // changes from the receipt page wait for a cycle to end (session-lock.js)
+      await exclusive(async () => { // changes from the receipt page wait for a cycle to end (session-lock.js)
+        reloadConfig(); refreshMode();
+        if (!config.dryRun) await nextcloud.ensureFolders();
+        await cycle(opts);
+        if (!stopping) await archiveDone();
+      });
     } catch (err) {
       log(`cycle failed${isTransient(err) ? ' (outage, retrying on the next poll)' : ''}: ${err.message}`);
     }

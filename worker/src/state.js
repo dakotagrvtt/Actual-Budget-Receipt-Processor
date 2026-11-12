@@ -112,9 +112,16 @@ export function txnIdsAppliedUnderName(state, key) {
   return ids;
 }
 
+/** An interrupted correction may have moved the file before its new state key was saved. Keep that path paused too. */
+export function resolutionBlocked(state, item) {
+  return Object.entries(state).some(([key, entry]) => entry.resolutionPending && parseStateKey(key).file === item.filename);
+}
+
 /** Is this inbox file due? New, retrying, waiting with its re-check time up (or a manual check), or waiting to be moved. */
 export function isDue(entry, now, recheckAll) {
   if (!entry) return true;
+  if (entry.resolutionPending || entry.filing || entry.creating) return false; // a corrected reading must finish saving before processing resumes
+  if (entry.reread) return true; // "Read again" was pressed on the receipt page (reread.js): even a finished dry-run receipt is read again
   if (entry.done) return false;
   if (entry.folder || !entry.waiting) return true;
   return recheckAll || Date.parse(entry.waiting.nextCheck) <= now;
@@ -126,11 +133,11 @@ export function failedEntry(prev, attempts, message, at = new Date().toISOString
   const kept = prev?.applied ? { applied: prev.applied, result: prev.result, folder: prev.folder, summary: prev.summary } : {};
   // A cloud reader charges for every reading: keep the one already paid for, so a retry does not read the photo again.
   // (The local reader is read again, since the reading itself may be what failed.)
-  const reading = remoteReader && prev?.reading ? { reading: prev.reading } : {};
+  const reading = (remoteReader || prev?.receiptFields) && prev?.reading ? { reading: prev.reading } : {};
   // Answers the hosted decider was already paid for stay too; they go when the receipt finishes (the entry is replaced then).
   const paid = remoteDecider && prev?.deciderAnswers && Object.keys(prev.deciderAnswers).length ? { deciderAnswers: prev.deciderAnswers } : {};
   const skips = prev?.imageSkips ? { imageSkips: prev.imageSkips } : {}; // stays, so a receipt given up on is not skipped three more times
-  return { ...kept, ...reading, ...paid, ...skips, done: false, attempts, error: message, at };
+  return { ...kept, ...reading, ...paid, ...skips, ...(prev?.receiptFields ? { receiptFields: prev.receiptFields } : {}), done: false, attempts, error: message, at };
 }
 /** A paid cloud call (reader, hosted decider) that keeps failing on one receipt (a timeout may still be billed): this many checks in a row count as a failed attempt. */
 export const MAX_TRANSIENT_CYCLES = 3;

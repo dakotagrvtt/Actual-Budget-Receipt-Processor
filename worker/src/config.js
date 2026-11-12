@@ -5,6 +5,7 @@
 // those win over .env. `config` is built once at import from .env plus that file, and reloadConfig() rebuilds it in place at the
 // start of every check, so modules that import `config` always see the current values.
 import { readOverrides } from './web-overrides.js';
+import { archiveFolderProblem } from './folders.js';
 
 // The settings being read right now: buildConfig() points this at the object it was given for the length of the call.
 let env = process.env;
@@ -69,6 +70,17 @@ const url = (key, dflt) => (dflt === undefined ? required(key) : (env[key] ?? df
 export function siteUrl(address) {
   const a = address.trim().replace(/\/+$/, '');
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(a) ? a : `https://${a}`;
+}
+
+/** The clean base address ('https://host[:port][/path]') for a typed one, or '' when it is empty or not a plain http(s) address. */
+export function cleanLinkBase(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text || text.length > 500 || /[\u0000-\u001f\s\\]/.test(text)) return '';
+  let u;
+  try { u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`); } catch { return ''; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+  if (u.username || u.password || !u.hostname) return '';
+  return `${u.origin}${u.pathname}`.replace(/\/+$/, '');
 }
 
 const KEYWORD_MODES = ['off', 'final', 'hint', 'mixed'];
@@ -176,6 +188,9 @@ function makeConfig() {
 
   const envDryRun = bool('DRY_RUN', true);
 
+  const archiveProblem = archiveFolderProblem({ inbox: env.RECEIPTS_INBOX ?? '/Receipts/Inbox', processed: env.RECEIPTS_PROCESSED ?? '/Receipts/Processed', review: env.RECEIPTS_REVIEW ?? '/Receipts/Needs review', archive: env.RECEIPTS_ARCHIVE ?? '/Receipts/Archive' });
+  if (archiveProblem) warn(`${archiveProblem}; archiving is off until it is fixed (the worker carries on with receipts)`);
+
   return {
     // --- Worker loop and files under /data ---
     // dryRun is what the worker acts on. It starts as the .env value; once data/settings.json exists it is the switch
@@ -192,6 +207,8 @@ function makeConfig() {
     // A setup problem that pauses the checks (alert.js): the status page shows it as a banner.
     alertPath: env.ALERT_PATH ?? '/data/worker-alert.json',
     // Web page + webhook to check the inbox on demand (see trigger.js). Off unless TRIGGER_TOKEN is set.
+    // The Actual account a cash purchase is created in from its receipt page (Settings tab); empty = not chosen yet.
+    cashAccount: (env.CASH_ACCOUNT ?? '').trim(),
     trigger: { token: (env.TRIGGER_TOKEN ?? '').trim(), timeZone: env.TRIGGER_TIMEZONE || 'UTC' },
 
     // --- Reader (vision model) ---
@@ -314,6 +331,8 @@ function makeConfig() {
     // --- Actual Budget and Nextcloud ---
     actual: {
       serverURL: siteUrl(requiredTrimmed('ACTUAL_SERVER_URL')),
+      // Where "Open in Actual" links point (ACTUAL_LINK_URL); empty or unusable falls back to the server address (actual-link.js cleans it again).
+      linkURL: cleanLinkBase(env.ACTUAL_LINK_URL) || cleanLinkBase(siteUrl(requiredTrimmed('ACTUAL_SERVER_URL'))),
       password: required('ACTUAL_PASSWORD'),
       syncId: required('ACTUAL_SYNC_ID'),
       e2ePassword: env.ACTUAL_E2E_PASSWORD || undefined,
@@ -330,7 +349,11 @@ function makeConfig() {
       inbox: env.RECEIPTS_INBOX ?? '/Receipts/Inbox',
       processed: env.RECEIPTS_PROCESSED ?? '/Receipts/Processed',
       review: env.RECEIPTS_REVIEW ?? '/Receipts/Needs review',
+      archive: env.RECEIPTS_ARCHIVE ?? '/Receipts/Archive',
     },
+    // Archiving receipts you agree are right (archive.js): after how many days a done receipt is archived by itself (0 = never),
+    // and whether the photo is shrunk when it moves to the Archive folder.
+    archive: { afterDays: Math.max(0, Math.round(num('ARCHIVE_AFTER_DAYS', 0))), shrink: bool('ARCHIVE_SHRINK_PHOTOS', true), problem: archiveProblem },
   };
 }
 

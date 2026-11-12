@@ -107,6 +107,47 @@ export const recordMarks = ({ confirmed = [], corrected = {}, clear = [] }) =>
     return { confirmed: [...new Set(sure)].slice(-MARKS_MAX), corrected: fixed };
   });
 
+const SEEN_MAX = 2000;
+
+/**
+ * What Actual had when a charge was last looked at, by transaction id (the sweep and the receipt page's "Check Actual now"):
+ * { at, changed: why the items can't be matched (or null), items: [{ d, now, said }] the items whose category differs from what
+ * was filed, whole: the one category the whole charge has now (or null), review: #review is still in the notes, reviewed: it was
+ * flagged and #review is gone (whatever else changed) }. Kept apart from the marks, which mean confirmed or corrected.
+ */
+export async function loadSeen() {
+  const j = await readJson('seen.json', {});
+  return j.seen && typeof j.seen === 'object' && !Array.isArray(j.seen) ? j.seen : {};
+}
+
+/** Remember what Actual had for these charges ({ txnId: record }), replacing earlier records; at most SEEN_MAX (the oldest go). */
+export const recordSeen = (records) =>
+  update('seen.json', {}, (j) => {
+    const seen = { ...(j.seen && typeof j.seen === 'object' && !Array.isArray(j.seen) ? j.seen : {}), ...records };
+    const ids = Object.keys(seen).sort((a, b) => String(seen[a]?.at ?? '').localeCompare(String(seen[b]?.at ?? '')));
+    for (const id of ids.slice(0, Math.max(0, ids.length - SEEN_MAX))) delete seen[id];
+    return { seen };
+  });
+
+/** Forget the looks at these charges (Undo of a change made on the receipt page). */
+export const forgetSeen = (ids) =>
+  update('seen.json', {}, (j) => {
+    const seen = { ...(j.seen && typeof j.seen === 'object' && !Array.isArray(j.seen) ? j.seen : {}) };
+    for (const id of ids) delete seen[id];
+    return { seen };
+  });
+
+/** loadSeen for the pages: a damaged file reads as empty (the Learned page and the sweep report it). */
+export async function seenIndex() {
+  try {
+    return await loadSeen();
+  } catch (err) {
+    if (!(err instanceof MemoryError)) throw err;
+    warnOnce(err);
+    return {};
+  }
+}
+
 /** Put one charge's marks back as they were ({ confirmed: boolean, corrected: keys | null }), after an Undo from the receipt page. */
 export const restoreMarks = (txnId, was) =>
   update('marks.json', {}, (j) => {

@@ -7,13 +7,14 @@ import * as actual from './actual.js';
 import { prepareImages } from './image.js';
 import { readReceipt } from './llm.js';
 import { categorizeItems, clearMove, receiptLabels, atLeast } from './categorize.js';
-import { allocate, cents, foldDiscounts, fixTaxGap, partNote, fixCashTotal, ITEMS_NOTE_MAX, mergeParts, money, shortName, UNCATEGORIZED } from './reconcile.js';
+import { allocate, cents, foldDiscounts, flipNumberRefs, fixTaxGap, gapSplitDoubt, partNote, fixCashTotal, cashPurchase, ITEMS_NOTE_MAX, mergeParts, money, shortName, UNCATEGORIZED } from './reconcile.js';
 import { isoDay, receiptAnchor, resolveDate, shiftDay, today } from './dates.js';
 import { ruleCategoryFor, amountRulesFor } from './rules.js';
 import { harvestAlways } from './keywords.js';
 import { occasionDetails } from './calendar.js';
 import { chargeDeadline, describe, findMatch, unmatchable } from './match.js';
 import { stateKey, txnIdsAppliedUnderName } from './state.js';
+import { isOutage, isClientTimeout, isCounted } from './errors.js';
 import { buildSnapshot, keywordCandidates, lessonsUpTo, usableLessons, withLessons } from './learning.js';
 
 // How far back to look for a transaction already tagged with a receipt's file name (crash recovery, see processReceipt).
@@ -222,27 +223,60 @@ export async function processReceipt(item, labels, entry, ctx) {
     log('  the saved reading came from another reader; reading the photo again');
     delete entry.reading;
   }
-  if (!entry.reading) {
+  // "Read again" on the receipt page (reread.js): the photo is read afresh like a new upload. The old reading is only replaced once the
+  // new one is in (an outage before that leaves everything as it was), and a waiting receipt keeps it for "Use old reading".
+  const again = Boolean(entry.reread && entry.reading);
+  if (!entry.reading || again) {
     await ctx.modelReady();
-    const images = await prepareImages(await nextcloud.download(item), item.basename, config.maxImageSide);
-    const { receipt, mode } = await readReceipt(images);
-    entry.reading = { receipt: structuredClone(receipt), mode, reader: currentReader() };
-    // Only consecutive reader failures count: the reader answered with a new reading, so its count starts again. A reused
-    // reading says nothing about the reader (the cloud name scan that follows is a reader call too, and keeps counting).
-    delete entry.transientFails;
+    if (again) log('  reading it again (asked on the receipt page)');
+    let got = null;
+    try {
+      // ctx.readPhoto (tests): stands in for downloading and reading the photo
+      got = ctx.readPhoto ? await ctx.readPhoto(item) : await readReceipt(await prepareImages(await nextcloud.download(item), item.basename, config.maxImageSide));
+    } catch (err) {
+      // A re-read that fails must not cost the receipt what it has: an outage stops the check as for any receipt (everything is still as it
+      // was), anything else keeps the old reading and the waiting state, and ends in a note on the page.
+      if (!again || isOutage(err)) throw err;
+      noteFailedReread(entry, err);
+    }
+    if (got) {
+      const old = entry.reading;
+      entry.reading = { receipt: structuredClone(got.receipt), mode: got.mode, reader: currentReader() };
+      if (again && entry.waiting && !entry.done) Object.assign(entry, { previousReading: { reading: old, at: new Date().toISOString() }, rereadAt: new Date().toISOString() });
+      // Only consecutive reader failures count: the reader answered with a new reading, so its count starts again. A reused
+      // reading says nothing about the reader (the cloud name scan that follows is a reader call too, and keeps counting).
+      delete entry.transientFails;
+      delete entry.reread; // done: a later failure must not read the photo (and pay for it) a third time
+      delete entry.rereadNote;
+    }
   } else {
     log(`  using the reading saved ${entry.waiting?.since ? `on ${entry.waiting.since}` : 'earlier'}`);
   }
   // With the hosted decider, answers already paid for are kept on the entry (keyed by request), so a retry does not buy them again.
   const deciderCache = config.decider.provider === 'remote' ? (entry.deciderAnswers ??= {}) : undefined;
-  return handleReceipt(item, structuredClone(entry.reading.receipt), entry.reading.mode, labels, { harvestKeywords: true, ...(deciderCache ? { deciderCache } : {}) });
+  const receipt = { ...structuredClone(entry.reading.receipt), ...(entry.receiptFields ?? {}) };
+  if (entry.receiptFields) receipt.manualFields = Object.keys(entry.receiptFields);
+  return handleReceipt(item, receipt, entry.reading.mode, labels, { harvestKeywords: true, ...(deciderCache ? { deciderCache } : {}) });
+}
+
+const MAX_REREAD_TRIES = 3; // checks in a row a re-read may fail in a way that may be about this photo (a timeout) before the request is dropped
+/** A failed re-read: the earlier reading stays. A timeout or counted cloud failure is tried again next check, up to MAX_REREAD_TRIES; anything else (the reader gave an unusable answer) ends the request at once. */
+function noteFailedReread(entry, err) {
+  const tries = (entry.reread.tries ?? 0) + 1;
+  const retry = isClientTimeout(err) || isCounted(err);
+  log(`  reading it again failed (${err.message}); keeping the earlier reading${retry && tries < MAX_REREAD_TRIES ? ' and trying again at the next check' : ''}`);
+  if (retry && tries < MAX_REREAD_TRIES) entry.reread = { ...entry.reread, tries };
+  else {
+    delete entry.reread;
+    entry.rereadNote = { at: new Date().toISOString(), text: `Reading again did not work (${String(err.message).slice(0, 200)}). The earlier reading was kept. Nothing was changed.` };
+  }
 }
 
 /** Who reads the photos now: saved with a reading, so a reading from another reader is not used. The local reader has no host. */
 export const currentReader = () => (config.reader.provider === 'remote'
   ? { provider: 'remote', host: config.reader.host, model: config.reader.model }
   : { provider: 'local', host: null, model: config.llmName ?? null });
-const sameReader = (a, b) => a?.provider === b.provider && (a.host ?? null) === b.host && (a.model ?? null) === b.model;
+export const sameReader = (a, b) => a?.provider === b.provider && (a.host ?? null) === b.host && (a.model ?? null) === b.model;
 
 function ambiguousTag(item, found) {
   const problem = `${found.length} transactions already carry "#receipt ${item.basename}" (${found.map(describe).join('; ')}); cannot tell which one this photo belongs to, so nothing was changed: check them in Actual`;
@@ -265,6 +299,42 @@ function alreadyApplied(item, txn) {
 }
 
 /**
+ * A flipped numbers-only line (flipNumberRefs) is a guess: it needs no #review when the items, after the folds and the tax-gap repair,
+ * add up to the printed subtotal (2 cents); otherwise this doubt sends the receipt to review. Returns [] or one sentence.
+ */
+export function flipDoubt(flips, receipt) {
+  if (!flips.length || receipt.subtotal == null) return [];
+  if (Math.abs(receipt.items.reduce((n, it) => n + cents(it.amount), 0) - cents(receipt.subtotal)) <= 2) return [];
+  return [`a numbers-only line (${flips.map((f) => `${f.line} ${money(f.cents)}`).join(', ')}) was read as positive and treated as a discount, but the items still don't add up to the subtotal`];
+}
+
+/**
+ * What every reading goes through before a charge is matched or the items are categorized: the purchase date, the cash-total fix,
+ * discount lines joined to their items, and the tax-gap repair. Used by handleReceipt (a first read and every re-check of a saved
+ * reading) and by "Read again" (reread.js), so a new reading comes out exactly as a fresh one would. Mutates the receipt.
+ * Returns { anchor, slackDays, date, dateNote, totalNote, flips }.
+ */
+export function settleReading(receipt, item, now = new Date()) {
+  // The purchase date as printed, checked against when the photo was uploaded; undated receipts match by upload time.
+  // The anchor is the earlier of the day in the file name (when the camera named it) and the upload time.
+  const { date: anchor, fromName, slackDays, photoDay } = receiptAnchor(item.basename, validDate(item.lastmod) ?? now, now);
+  if (fromName) log(`  photo taken ${photoDay} (from the file name)`);
+  const resolved = resolveDate(receipt, anchor, { slackDays });
+  const manualDate = receipt.manualFields?.includes('date') && (receipt.date === null || /^\d{4}-\d{2}-\d{2}$/.test(receipt.date ?? ''));
+  const { date, note: dateNote } = manualDate ? { date: receipt.date, note: null } : resolved;
+  receipt.date = date;
+  const totalNote = receipt.manualFields?.includes('total') ? null : fixCashTotal(receipt);
+  if (totalNote) log(`  ${totalNote}`);
+  // Discount and coupon lines join the item they discount (live, replay and every re-check of a saved reading go through here).
+  const flips = flipNumberRefs(receipt);
+  for (const f of flips) log(`  read "${f.line}" as +${money(f.cents)} but the items exceed the subtotal; treating it as a discount (-${money(f.cents)})`);
+  for (const f of foldDiscounts(receipt)) log(`  folded "${f.line}" (${money(-f.cents)}) into ${f.into}`);
+  const gapFix = fixTaxGap(receipt); // items off the subtotal, fixed from the printed tax lines
+  if (gapFix) log(`  items were ${money(Math.abs(gapFix.cents))} ${gapFix.cents > 0 ? 'over' : 'under'} the subtotal; corrected on the items taxed at ${gapFix.codes.join(', ')}`);
+  return { anchor, slackDays, date, dateNote, totalNote, flips };
+}
+
+/**
  * Everything after the receipt has been read: match the bank transaction, categorize the items from this
  * household's history at the store, check, decide, then apply to Actual (or only log, in dry run).
  * opts.includeSplits is for replay tests; opts.replay never waits for a charge; opts.now is
@@ -274,22 +344,12 @@ function alreadyApplied(item, txn) {
 export async function handleReceipt(item, receipt, readMode, labels, opts = {}) {
   const now = opts.now ?? new Date();
   const id2label = actual.idToLabel(labels);
-  // The purchase date as printed, checked against when the photo was uploaded; undated receipts match by upload time.
-  // The anchor is the earlier of the day in the file name (when the camera named it) and the upload time.
-  const { date: anchor, fromName, slackDays, photoDay } = receiptAnchor(item.basename, validDate(item.lastmod) ?? now, now);
-  if (fromName) log(`  photo taken ${photoDay} (from the file name)`);
-  const { date, note: dateNote } = resolveDate(receipt, anchor, { slackDays });
-  receipt.date = date;
-  const totalNote = fixCashTotal(receipt);
-  if (totalNote) log(`  ${totalNote}`);
-  // Discount and coupon lines join the item they discount (live, replay and every re-check of a saved reading go through here).
-  for (const f of foldDiscounts(receipt)) log(`  folded "${f.line}" (${money(-f.cents)}) into ${f.into}`);
-  const gapFix = fixTaxGap(receipt); // items off the subtotal, fixed from the printed tax lines
-  if (gapFix) log(`  items were ${money(Math.abs(gapFix.cents))} ${gapFix.cents > 0 ? 'over' : 'under'} the subtotal; corrected on the items taxed at ${gapFix.codes.join(', ')}`);
+  const { anchor, slackDays, date, dateNote, totalNote, flips } = settleReading(receipt, item, now);
   log(`  read (${readMode}): ${receipt.merchant}${receipt.store_clues?.length ? ` [${receipt.store_clues.join(', ')}]` : ''}, ${date ?? 'no date'}${dateNote ? ` (${dateNote})` : ''}, total ${money(cents(receipt.total))}, ${receipt.items.length} item(s)`);
 
+  // A flipped line is a guess: it needs no #review only when the items now add up to the printed subtotal.
   const problems = []; // anything here sends the receipt to review without changing Actual
-  const itemDoubts = []; // matter only if money would move (see step 4)
+  const itemDoubts = [...flipDoubt(flips, receipt)]; // matter only if money would move (see step 4)
   const matchDoubts = []; // matter for any change, even a note (a pending charge may be replaced when it clears)
   const blocker = unmatchable(receipt);
   if (blocker) problems.push(blocker);
@@ -319,8 +379,14 @@ export async function handleReceipt(item, receipt, readMode, labels, opts = {}) 
   let allocation = null;
   let taxExplained = null;
   let cat = { history: [], ruleLabel: null, fallback: null, categorizedWith: null };
+  // A cash purchase has no charge to match, but its page can create one: the items start with the categories a matched receipt would get.
+  if (!txn && blocker && cashPurchase(receipt)) {
+    const cashTxn = { id: null, payeeName: null, imported_payee: receipt.merchant, amount: -cents(receipt.total), date };
+    cat = await categorizeReceipt(receipt, cashTxn, labels, id2label, null, [], opts);
+  }
   if (txn && problems.length === 0) {
     cat = await categorizeReceipt(receipt, txn, labels, id2label, currentLabel, itemDoubts, opts);
+    itemDoubts.push(...gapSplitDoubt(receipt)); // a missed discount spread over items in different categories
     if (txn.extraCents > 0) itemDoubts.push(`the charge is ${money(txn.extraCents)} more than the receipt total (tip?)`);
     // A big restaurant bill is often a gift meal (or part of one): worth a look even when Restaurants is kept.
     const gm = config.giftMeal;

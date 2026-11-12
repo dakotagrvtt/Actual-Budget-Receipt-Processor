@@ -375,7 +375,7 @@ export async function chatJson(messages, schema, check) {
 const RECEIPT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['merchant', 'store_clues', 'date_as_printed', 'date', 'currency', 'subtotal', 'tax', 'tip', 'total', 'payment_method', 'cash_tendered', 'card_last4', 'is_return', 'tax_lines', 'items'],
+  required: ['merchant', 'store_clues', 'date_as_printed', 'date', 'currency', 'subtotal', 'tax', 'tip', 'total', 'payment_method', 'cash_tendered', 'card_last4', 'savings', 'is_return', 'tax_lines', 'items'],
   properties: {
     merchant: { type: 'string' },
     store_clues: { type: 'array', items: { type: 'string' } },
@@ -389,6 +389,7 @@ const RECEIPT_SCHEMA = {
     payment_method: nullable('string'),
     cash_tendered: nullable('number'),
     card_last4: nullable('string'),
+    savings: nullable('number'),
     is_return: { type: 'boolean' },
     tax_lines: {
       anyOf: [
@@ -417,6 +418,12 @@ Rules:
 - "total" is never the cash handed over or the change given back. "payment_method" is "cash", "card", or what else is
   printed (null if not shown). "cash_tendered" is the cash handed over when paid in cash, else null.
 - Discounts and coupons are line items with negative amounts.
+- "savings" is the total savings the receipt prints on a line of its own ("INSTANT SAVINGS $4.00", "YOU SAVED 3.20",
+  "TOTAL SAVINGS"), as a positive number. Use null if no such line is printed. Do not add up discounts yourself.
+- An amount printed with a minus after it ("5.00-", "5.00-A") is negative. A line of only item numbers with such an
+  amount ("0000393481 / 580664    5.00-") is a discount for an item: include it with a negative amount, never skip it.
+- A multi-buy line under an item, like "1 @ 2 $4.00" (one at a 2-for-$4.00 price), is not the item's price: the amount is the price
+  printed on the item's own line (2.00).
 - "merchant" is the business name: from the logo or header, or else from a business named in a website, email
   address or return policy. Never use a city, street, state or tax jurisdiction as the merchant.
 - "store_clues" lists every other piece of text that names the business: website and email domains, store names in
@@ -492,6 +499,9 @@ export function checkReceipt(r) {
   if (!Number.isFinite(total)) throw new Error(`bad total: ${JSON.stringify(r.total)}`);
   r.total = total;
   for (const k of ['subtotal', 'tax', 'tip', 'cash_tendered']) r[k] = optional(r[k]);
+  // The savings the receipt prints for itself: only a plain non-negative amount counts (it is compared with a gap, never used as an item).
+  const savings = toNumber(r.savings);
+  r.savings = Number.isFinite(savings) && savings >= 0 ? savings : null;
   r.payment_method = typeof r.payment_method === 'string' && r.payment_method.trim() ? r.payment_method.trim().toLowerCase() : null;
   if (typeof r.card_last4 === 'number') r.card_last4 = String(r.card_last4);
   if (typeof r.card_last4 !== 'string' || !r.card_last4.trim()) r.card_last4 = null;
@@ -553,7 +563,7 @@ export async function readReceipt(images) {
       role: 'user',
       content: [
         ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
-        { type: 'text', text: `Return a JSON object with: merchant, store_clues, date_as_printed, date, currency (ISO code like USD), subtotal, tax, tip, total, payment_method, cash_tendered, card_last4 (last 4 digits of the card if printed), is_return, items (array of {${fields.join(', ')}})${config.taxByItem ? ', tax_lines (array of {code, rate, base, amount})' : ''}.` },
+        { type: 'text', text: `Return a JSON object with: merchant, store_clues, date_as_printed, date, currency (ISO code like USD), subtotal, tax, tip, total, payment_method, cash_tendered, card_last4 (last 4 digits of the card if printed), savings, is_return, items (array of {${fields.join(', ')}})${config.taxByItem ? ', tax_lines (array of {code, rate, base, amount})' : ''}.` },
       ],
     },
   ];
