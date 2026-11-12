@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { workspaceFixtures } from './workspace-fixtures.js';
+const f = await workspaceFixtures();
+const target = '/tmp/receipt-ui-render';
+fs.mkdirSync(target, { recursive: true });
+const pages = { receipt: f.renderReceipt(), overview: f.overviewHtml, settings: f.settingsHtml };
+const responses = { preview: f.changedPreview, unchanged: f.unchangedPreview, saved: f.savedHtml, other: f.otherHtml, settings: f.settingsHtml, initial: f.renderReceipt(), overview: f.overviewHtml };
+fs.writeFileSync(path.join(target, 'responses.json'), JSON.stringify(Object.fromEntries(Object.entries(responses).map(([name, html]) => [name, html.match(/<main\b[^]*?<\/main>/)[0]]))));
+for (const [name, html] of Object.entries(pages)) fs.writeFileSync(path.join(target, name + '.html'), html.replace(/src="receipt-photo[^"]*"/g, 'src="/tmp/receipt-ui-render/receipt.png"'));
+fs.writeFileSync(path.join(target, 'fixture.json'), JSON.stringify({ id: f.id, reading: f.view().fix.readingId, items: f.view().fix.items.length }));
+console.log(`Rendered ${Object.keys(pages).length} synthetic application pages in ${target}`);
+f.cleanup();

@@ -13,7 +13,7 @@ const STUBS = {
     export default { init: async () => {}, downloadBudget: async () => {}, shutdown: async () => {}, getAccounts: empty,
       getPayees: empty, getCategories: empty, getCategoryGroups: empty, getRules: empty, getTransactions: empty,
       updateTransaction: async () => {} };`,
-  webdav: 'export const createClient = () => ({});',
+  webdav: 'export const createClient = (...args) => globalThis.__receiptTestDav?.(...args) ?? ({});',
 };
 const hooks = `
   const stubs = ${JSON.stringify(STUBS)};
