@@ -1,6 +1,7 @@
 // The Privacy tab (shown with the hosted decider): what is sent, the names and places that are hidden, and what the scan found.
 import { config } from './config.js';
 import { escape, layout, post, toolbar, sortable } from './panel-layout.js';
+import { underSettings } from './panel-settings-page.js';
 
 /** Who runs the name and place scan, for the Privacy page: the cloud reader when there is one. */
 const scanWhere = () => (config.reader.provider === 'remote' ? `the cloud reader (${escape(config.reader.host)}, CLOUD_NAME_SCAN=true; the raw text is sent to it)` : 'the reader model on this machine');
@@ -45,5 +46,5 @@ ${list('p-notplaces', 'words', ['Word', ''], notPlaceRows, 'None')}
 <h2>Not a name</h2>
 <p class="muted small">Words the scan may flag but that are not people. They are sent as they are.</p>
 ${list('p-notnames', 'words', ['Word', ''], notRows, 'None')}`;
-  return layout({ active: 'privacy', key, notice, body, undo });
+  return layout({ active: 'privacy', key, notice, body: underSettings(key, 'Privacy', body), undo });
 }

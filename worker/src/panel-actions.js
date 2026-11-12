@@ -1,3 +1,4 @@
+import { exclusive } from './session-lock.js';
 // What the status page's buttons do. Each handler takes the submitted form (a URLSearchParams) and returns a short
 // notice to show, or throws PanelError with a message for the user. No HTTP in here, so tests call them directly.
 import crypto from 'node:crypto';
@@ -80,8 +81,8 @@ export async function changeMode(form) {
   await writeSettings({ dryRun, changedBy: 'status page' });
   log(`mode set to ${dryRun ? 'dry run' : 'live'} from the status page; applies at the start of the next check`);
   return dryRun
-    ? 'Switching to dry run. It applies at the start of the next check (press "Check for receipts now" to do it right away).'
-    : 'Switching to live. It applies at the start of the next check (press "Check for receipts now" to do it right away).';
+    ? 'Switching to dry run. It applies at the start of the next check (press "Check now" to do it right away).'
+    : 'Switching to live. It applies at the start of the next check (press "Check now" to do it right away).';
 }
 
 /** The group part of "Group / Category" when the category list from Actual isn't known yet (a category name rarely has " / " in it). */
@@ -245,31 +246,22 @@ export async function undoLesson(form) {
  * result says; "<action>+review" also counts): Actual has to be fixed by hand first. 'no': anything else, including every dry-run result (nothing was moved).
  */
 export function retryStatus(key, entry) {
-  if (parseStateKey(key).dry || !entry?.done) return 'no';
+  if (parseStateKey(key).dry || !entry?.done || entry.archived || entry.resolutionPending || entry.filing || entry.creating) return 'no';
   if (entry.applied) return 'undo';
   if (entry.result === 'review' || entry.result === 'failed') return 'yes';
   if (String(entry.result ?? '').endsWith('+review')) return 'undo';
   return 'no';
 }
 
-// Try again runs one at a time, and re-reads the state inside, so a double click can't move or forget anything twice.
-let retryChain = Promise.resolve();
-
-/**
- * Move a receipt from Needs review back to the inbox and clear its state entry, so the next check reads it fresh.
- * It moves exactly the file recorded in the entry (entry.filedAs) and refuses when that is unknown, when the summary
- * shows Actual was changed, or when the inbox already has a file with that name.
- * deps.nextcloud is a stand-in for nextcloud.js in tests.
- */
-export function tryAgain(form, deps = {}) {
-  const run = retryChain.then(() => tryAgainNow(form, deps));
-  retryChain = run.catch(() => {});
-  return run;
+// Retry shares the Actual session lock with saves and worker checks, then revalidates the current entry.
+export async function tryAgain(form, deps = {}) {
+  try { return await exclusive(() => tryAgainNow(form, deps), { timeoutMs: deps.lockWaitMs ?? 20000 }); }
+  catch (err) { if (err.name === 'BusyError') throw new PanelError('The worker is busy. Try again in a minute.'); throw err; }
 }
 
 async function tryAgainNow(form, deps) {
   const key = form.get('entry') ?? '';
-  if (config.dryRun) throw new PanelError('Nothing is moved in dry run. Go live first.');
+  if (config.dryRun || resolveDryRun().dryRun) throw new PanelError('Nothing is moved in dry run. Go live first.');
   let state;
   try {
     state = await loadState();
@@ -278,6 +270,7 @@ async function tryAgainNow(form, deps) {
   }
   const entry = state[key];
   if (!entry) throw new PanelError('That receipt isn\'t in the list any more (it may already have been sent back). Nothing was moved.');
+  if (entry.archived) throw new PanelError('That receipt is archived. Restore it first (Archived tab); nothing was moved.');
   const status = retryStatus(key, entry);
   if (status === 'undo') throw new PanelError('That change was already applied in Actual. Undo it there first (restore the category and remove the #receipt note). Then delete the file from Needs review and upload the receipt again.');
   if (status !== 'yes') throw new PanelError('That receipt can\'t be tried again.');

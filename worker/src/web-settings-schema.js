@@ -4,18 +4,20 @@
 // the models, GPU, LLM_*, READER_*, DECIDER_*, providers and API keys, CLOUD_NAME_SCAN, PRIVATE_WORDS, PRIVATE_PLACES,
 // OCCASIONS_CALENDAR(S), every *_PATH and *_DIR, COMPOSE_FILE and RENDER_GID.
 
+import { knownAccounts } from './known-accounts.js';
+
 export class SettingError extends Error {}
 
 export const SECTIONS = [
-  { id: 'connections', title: 'Connections' },
-  { id: 'matching', title: 'Matching' },
-  { id: 'categorizing', title: 'Categorizing' },
-  { id: 'behaviour', title: 'Behaviour' },
+  { id: 'connections', title: 'Connections and folders' },
+  { id: 'matching', title: 'Accounts and splitting' },
+  { id: 'categorizing', title: 'Review decisions' },
+  { id: 'behaviour', title: 'Schedule and display' },
   { id: 'holidays', title: 'Holidays and gift meals' },
   { id: 'keywords', title: 'Keywords and learning' },
 ];
 
-// type: bool | number (min, max, int) | enum (values) | list | text | url | secret | folder
+// type: bool | number (min, max, int) | enum (values) | list | text | url | secret | folder | account (one of Actual's open accounts, or empty)
 // `required`: may not be empty. `pattern`/`check`: extra rules for text. `secret`: shown only as set / not set, never as a value.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function checkTimeZone(v) {
@@ -36,6 +38,7 @@ const adv = (def) => ({ ...def, advanced: true });
 export const SETTINGS = [
   // --- Connections ---
   { key: 'ACTUAL_SERVER_URL', section: 'connections', label: 'Actual server address', type: 'url', required: true, default: '', help: 'The same address you open in the browser. For Actual on this same computer: http://host.docker.internal:5006' },
+  { key: 'ACTUAL_LINK_URL', section: 'connections', label: 'Actual address for links', type: 'url', rebuild: true, default: '', help: 'The address your browser uses to open Actual, for the "Open in Actual" links. Empty uses the Actual server address above. Only http:// and https:// addresses work.' },
   { key: 'ACTUAL_PASSWORD', section: 'connections', label: 'Actual server password', type: 'secret', required: true, default: '', help: 'The server password you log in with.' },
   { key: 'ACTUAL_SYNC_ID', section: 'connections', label: 'Actual sync ID', type: 'text', required: true, pattern: UUID, patternText: 'looks like 1a2b3c4d-1234-5678-9abc-def012345678', default: '', help: 'In Actual: Settings, Show advanced settings, Sync ID. Changing it points the worker at a different budget.' },
   { key: 'ACTUAL_E2E_PASSWORD', section: 'connections', label: 'Actual encryption password', type: 'secret', default: '', help: 'Only if the budget uses end-to-end encryption.' },
@@ -45,8 +48,10 @@ export const SETTINGS = [
   { key: 'RECEIPTS_INBOX', section: 'connections', label: 'Inbox folder', type: 'folder', required: true, default: '/Receipts/Inbox', help: 'Where you upload receipts.' },
   { key: 'RECEIPTS_PROCESSED', section: 'connections', label: 'Processed folder', type: 'folder', required: true, default: '/Receipts/Processed', help: 'Where receipts go once they are filed in Actual.' },
   { key: 'RECEIPTS_REVIEW', section: 'connections', label: 'Needs review folder', type: 'folder', required: true, default: '/Receipts/Needs review', help: 'Where receipts go when a person should look at them.' },
+  { key: 'RECEIPTS_ARCHIVE', section: 'connections', label: 'Archive folder', type: 'folder', required: true, default: '/Receipts/Archive', help: 'Where receipts you have checked are moved to when you archive them (in a folder per month). It can\'t be the same as, or inside, the Processed or Needs review folder.' },
 
   // --- Matching ---
+  { key: 'CASH_ACCOUNT', section: 'matching', label: 'Cash purchases go to', type: 'account', default: '', help: 'The Actual account that "Create in Actual" puts a cash purchase in (a cash receipt\'s page can pick another one for that receipt). Empty means not set. The list is what Actual had at the last check.' },
   { key: 'MATCH_ACCOUNTS', section: 'matching', label: 'Accounts to search', type: 'list', default: '', help: 'Only look for a receipt\'s bank charge in these accounts (names, separated by commas). Empty searches every open account that is in your budget.' },
   adv(number('MATCH_DAYS', 'matching', 'Days the charge may post after the receipt', '4', 0, 60, 'A bank charge can post a few days after the purchase. Raise this if charges often show up later than that; lower it to avoid matching the wrong charge.', true)),
   adv(number('MATCH_NO_DATE_RECENT_DAYS', 'matching', 'Undated receipts: days back that are applied', '14', 0, 3650, 'For a receipt with no readable date: how many days before the upload to look for its charge. A match here is doubtful: if the receipt would change the charge\'s category or split it, it goes to review (applied first if Apply then review is on). A receipt that only confirms the category is not reviewed for this.', true)),
@@ -80,9 +85,12 @@ export const SETTINGS = [
   adv(number('HOUSEHOLD_EXAMPLES', 'categorizing', 'Household examples per category', '5', 0, 50, 'How many of your newest split notes per category the decider sees with every item. Fewer is faster. 0 sends none.', true)),
 
   // --- Behaviour ---
-  number('POLL_SECONDS', 'behaviour', 'Seconds between checks', '300', 60, 3600, 'How often the Inbox is checked for new receipts. Lower picks them up sooner; "Check for receipts now" checks right away. An hour at most, so Docker does not report the container unhealthy.', true),
+  number('POLL_SECONDS', 'behaviour', 'Seconds between checks', '300', 60, 3600, 'How often the Inbox is checked for new receipts. Lower picks them up sooner; "Check now" checks right away. An hour at most, so Docker does not report the container unhealthy.', true),
   { key: 'TRIGGER_TIMEZONE', section: 'behaviour', label: 'Time zone for this page', type: 'text', check: checkTimeZone, default: 'UTC', help: 'Time zone for times shown on this page, for example America/New_York.' },
   adv(number('MAX_IMAGE_SIDE', 'behaviour', 'Longest side of a receipt photo (pixels)', '2240', 500, 8000, 'Photos are shrunk to this many pixels on the long side before the reader looks at them. Larger can read small print better but is slower.', true)),
+
+  adv(number('ARCHIVE_AFTER_DAYS', 'behaviour', 'Archive done receipts after (days)', '0', 0, 3650, 'A receipt that is Done (nothing left for you to check) is moved to the Archive folder by itself once it is this many days old. 0 turns this off: then receipts are only archived when you press a button. Receipts that still need a look in Actual are never archived by themselves.', true)),
+  adv(bool('ARCHIVE_SHRINK_PHOTOS', 'behaviour', 'Shrink photos when archiving', 'true', 'Archived photos are saved again as a smaller JPEG (at most 2400 pixels on the long side), and only if that saves at least 10%. This cannot be undone for the photo: Restore brings back the smaller picture, not the original. PDFs are never changed. Off moves the photo as it is.')),
 
   // --- Holidays and gift meals ---
   bool('OCCASIONS', 'holidays', 'Show holidays to the decider', 'true', 'Tell the decider when a purchase is near a US holiday (Valentine\'s, Easter, Mother\'s and Father\'s Day, Halloween, Thanksgiving, Christmas), so it can tell gifts from everyday buys.'),
@@ -115,7 +123,7 @@ export function normalizeValue(def, raw) {
   if (/[\r\n\0]/.test(text)) throw new SettingError(`${name}: must be on one line.`);
   const v = def.type === 'secret' ? text : text.trim();
   if (v === '') {
-    if (def.type === 'list' || (def.type === 'secret' && !def.required)) return '';
+    if (def.type === 'list' || (def.type === 'url' && !def.required) || def.type === 'account' || (def.type === 'secret' && !def.required)) return '';
     throw new SettingError(def.type === 'number' ? `${name}: type a number.` : `${name}: can't be empty.`);
   }
   if (v.length > 500) throw new SettingError(`${name}: is too long.`);
@@ -151,6 +159,7 @@ export function normalizeValue(def, raw) {
       }
       if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new SettingError(`${name}: must start with http:// or https://.`);
       if (u.username || u.password) throw new SettingError(`${name}: don't put a user name or password in the address.`);
+      if (def.rebuild) return `${u.origin}${u.pathname}`.replace(/\/+$/, ''); // origin + path only: no query, fragment or odd escapes
       return address;
     }
     case 'folder': {
@@ -160,6 +169,12 @@ export function normalizeValue(def, raw) {
     }
     case 'secret':
       return v;
+    case 'account': {
+      // One of the open accounts Actual had at the last check; before the first check the list is not known, so any name is accepted.
+      const known = knownAccounts();
+      if (known.length && !known.some((a) => a.name === v)) throw new SettingError(`${name}: "${v.slice(0, 80)}" is not one of your open accounts in Actual.`);
+      return v;
+    }
     default: // text
       if (def.pattern && !def.pattern.test(v)) throw new SettingError(`${name}: ${def.patternText ?? 'is not in the expected form'}.`);
       if (def.check && v) {

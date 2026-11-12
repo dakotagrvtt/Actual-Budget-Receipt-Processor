@@ -1,13 +1,17 @@
 // The status page's receipt view: where a receipt's file is now, the photo as something a browser can show, and what was read.
 // The request only names a state key; the file path always comes from the worker's own state entry, never from the request.
 // deps (tests pass stand-ins): nextcloud { statPath, downloadPath, readSummary }, prepare (image.js prepareImages).
+import { resolutionPreview } from './receipt-resolution.js';
 import path from 'node:path/posix';
 import { config } from './config.js';
 import { trimSlashes } from './folders.js';
 import { loadState, parseStateKey } from './state.js';
+import { seenIndex } from './memory.js';
+import { withSeen } from './receipt-lists.js';
 import { prepareImages } from './image.js';
 import { readDrySummary } from './dry-summaries.js';
-import { editorFor } from './receipt-fix.js';
+import { editorFor, classify } from './receipt-fix.js';
+import { lookAtActual, accountAsked } from './cash.js';
 
 const MAX_ID = 2000;
 const MAX_FILE = 40 * 1024 * 1024; // a bigger file is not downloaded at all
@@ -24,17 +28,18 @@ class Busy extends Error {}
 /** Is p inside folder (no .. tricks)? */
 const inside = (p, folder) => typeof p === 'string' && !p.split('/').includes('..') && p.startsWith(`/${trimSlashes(folder)}/`);
 
-/** Where this entry's file is now: its filed path (Processed / Needs review), or its inbox path. null if neither is a place we know. */
+/** Where this entry's file is now: its filed path (Processed / Needs review / Archive), or its inbox path. null if neither is a place we know. */
 export function locate(id, entry) {
   const nc = config.nextcloud;
-  if (entry.filedAs) return [nc.processed, nc.review].some((f) => inside(entry.filedAs, f)) ? entry.filedAs : null;
+  // An archived receipt may sit in the Archive folder as it was when it was archived (the setting can change later): the entry's own record, never the request's.
+  if (entry.filedAs) return [nc.inbox, nc.processed, nc.review, nc.archive, entry.archived ? entry.archived.folder : null].some((f) => f && inside(entry.filedAs, f)) ? entry.filedAs : null;
   const inbox = parseStateKey(id).file;
   return inside(inbox, nc.inbox) ? inbox : null;
 }
 
 async function entryFor(id) {
   if (typeof id !== 'string' || !id || id.length > MAX_ID) return null;
-  const state = await loadState();
+  const state = withSeen(await loadState(), await seenIndex());
   return Object.hasOwn(state, id) ? state[id] : null;
 }
 
@@ -159,7 +164,7 @@ export async function receiptView(id, deps = {}, query = null) {
   if (!entry) return { code: 404, message: NOT_FOUND };
   const file = locate(id, entry);
   const d = await defaults(deps);
-  const view = { id, name: parseStateKey(id).file.split('/').pop(), entry, file, pages: 0, pdf: /\.pdf$/i.test(parseStateKey(id).file), photoNote: '', summaryNote: '', summary: entry.summary ?? null };
+  const view = { id, name: parseStateKey(id).file.split('/').pop(), entry, file, pages: 0, pdf: /\.pdf$/i.test(file ?? parseStateKey(id).file), photoNote: '', summaryNote: '', summary: entry.filing?.summary ?? entry.resolutionPending?.summary ?? entry.summary ?? null };
   if (!file) {
     view.photoNote = 'This entry has no file location the panel can use.';
     return view;
@@ -179,9 +184,27 @@ export async function receiptView(id, deps = {}, query = null) {
   }
   // In dry run nothing is filed; the worker keeps a slim copy of the summary beside its state file.
   if (!view.summary && parseStateKey(id).dry) view.summary = await readDrySummary(id);
+  if (!view.summary && entry.reading?.receipt) view.summary = { file: view.name, receipt: entry.reading.receipt, problems: [entry.waiting?.reason ?? 'Waiting for the bank charge.'] };
+  const savedEdits = entry.creating?.context?.edits;
+  if (savedEdits && !query?.has('c0')) {
+    query = new URLSearchParams(query ?? undefined);
+    savedEdits.picks.forEach((value, i) => query.set(`c${i}`, value));
+    savedEdits.amounts.forEach((value, i) => query.set(`a${i}`, (value / 100).toFixed(2)));
+    savedEdits.added.forEach((value, i) => { query.set(`nd${i}`, value.description); query.set(`na${i}`, String(value.amount)); query.set(`nc${i}`, value.category); query.set(`nt${i}`, value.taxCode ?? (value.taxable ? '*' : '')); });
+    query.set('acct', entry.creating.context.accountName);
+  }
+  view.resolution = await resolutionPreview(view, query, deps);
   // Fixing the items' categories from this page (receipt-fix.js): what can be done, and the preview once asked for.
   try {
-    view.fix = editorFor({ id, entry, summary: view.summary, query });
+    const txn = view.summary?.transaction?.id;
+    view.seen = txn ? (await seenIndex())[txn] ?? null : null;
+    // A cash receipt's preview needs Actual's answer about the account, payee and duplicates (read only, only once Preview is pressed, never in dry run).
+    let cashLook = null;
+    const state = view.summary ? classify(id, entry, view.summary) : null;
+    if (state?.ok && state.kind === 'cash' && !state.dry && query?.get('preview') === '1' && query?.get('live') !== '1') {
+      cashLook = await lookAtActual({ entry, summary: view.summary, accountName: accountAsked(query) }, deps);
+    }
+    view.fix = editorFor({ id, entry, summary: view.summary, query, seen: view.seen, cashLook });
   } catch {
     view.fix = { ok: false, reason: 'the saved summary has an unexpected shape.' }; // untrusted file from Nextcloud: never break the page
   }

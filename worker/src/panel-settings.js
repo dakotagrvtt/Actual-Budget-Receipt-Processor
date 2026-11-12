@@ -6,7 +6,9 @@ import { reloadStatus } from './config.js';
 import { PanelError, offerUndo, checkUndo, categoriesData, UNDO_WINDOW_MS } from './panel-actions.js';
 import { SECTIONS, SETTINGS, SETTINGS_BY_KEY, SettingError, ENV_ONLY_NOTE, normalizeValue } from './web-settings-schema.js';
 import { loadOverrides, effectiveSetting, exclusionRules, checkChanges, checkPairs, changeOverrides, restoreOverrides, resetAllOverrides, restoreAllOverrides, DamagedSettingsError } from './web-settings.js';
+import { knownAccounts } from './known-accounts.js';
 import { testChanged, ConnectionTestError } from './connection-test.js';
+import { settingsSection } from './panel-settings-page.js';
 
 const MAX_REMEMBERED = 20;
 /** Stand-ins for the network in tests: { fetchFn, createClientFn }. */
@@ -19,6 +21,7 @@ const FORM_EXTRAS = new Set(['section', 'anyway', 'confirm', 'reset']);
 // ---- Undo: what a Settings change replaces is kept here, in memory, under a random id. The Undo link carries only the id (signed),
 // so a password's old value never travels in a link or a page. A restart forgets them (an Undo lasts 15 minutes anyway). ----
 const remembered = new Map();
+const restoring = new Set();
 function remember(entry) {
   const now = Date.now();
   for (const [id, e] of remembered) if (now - e.at > UNDO_WINDOW_MS) remembered.delete(id);
@@ -27,7 +30,9 @@ function remember(entry) {
   remembered.set(id, { ...entry, at: now });
   return id;
 }
-const offerSettingsUndo = (out, route, entry) => offerUndo(out, route, { id: remember(entry) });
+// The Undo of a Settings save also carries (signed) the section page it was made on, so pressing it comes back to that page.
+const withSection = (form) => { const section = settingsSection(form?.get?.('section')); return section ? { section } : {}; };
+const offerSettingsUndo = (out, route, entry, form = null) => offerUndo(out, route, { id: remember(entry), ...withSection(form) });
 
 /** Run a file change; a damaged file or a bad value becomes a message for the page. */
 async function guarded(change) {
@@ -99,7 +104,7 @@ export function saveSettings(form, out) {
       }
     }
     const before = await changeOverrides(typed, { typed: retyped });
-    offerSettingsUndo(out, 'undo-settings', { kind: 'keys', before, wrote: typed });
+    offerSettingsUndo(out, 'undo-settings', { kind: 'keys', before, wrote: typed }, form);
     return SAVED;
   });
 }
@@ -112,7 +117,7 @@ export function resetSetting(form, out) {
     refuseIfDamaged(overrides);
     if (!Object.hasOwn(overrides.values, key)) return `${SETTINGS_BY_KEY.get(key).label} already uses the .env value.`;
     const before = await changeOverrides({ [key]: null });
-    offerSettingsUndo(out, 'undo-settings', { kind: 'keys', before, wrote: { [key]: null } });
+    offerSettingsUndo(out, 'undo-settings', { kind: 'keys', before, wrote: { [key]: null } }, form);
     return `${SETTINGS_BY_KEY.get(key).label} uses the .env value again. It applies at the start of the next check.`;
   });
 }
@@ -124,28 +129,38 @@ export function resetAllSettings(form, out) {
     if (!overrides.damaged && form.get('confirm') !== 'yes') throw new PanelError('Tick the box to confirm resetting every setting on this page to its .env value.');
     if (!overrides.damaged && !overrides.exists) return 'Nothing was set on this page.';
     const was = await resetAllOverrides();
-    if (!overrides.damaged && Object.keys(was).length) offerSettingsUndo(out, 'undo-settings', { kind: 'all', values: was });
+    if (!overrides.damaged && Object.keys(was).length) offerSettingsUndo(out, 'undo-settings', { kind: 'all', values: was }, form);
     return overrides.damaged ? 'The damaged settings file was replaced. Every setting uses its .env value again.' : 'Every setting uses its .env value again. It applies at the start of the next check.';
   });
 }
 
 /** Undo a Settings save, reset or exclusion: the earlier override state of those keys comes back. */
-async function undoFromMemory(route, form) {
+async function undoFromMemory(route, form, out = {}) {
   checkUndo(route, form);
-  const entry = remembered.get(form.get('id') ?? '');
-  remembered.delete(form.get('id') ?? ''); // one use
+  const id = form.get('id') ?? '';
+  const entry = remembered.get(id);
   if (!entry || Date.now() - entry.at > UNDO_WINDOW_MS) return 'That Undo has expired (it is kept for 15 minutes while the worker runs), so nothing was changed.';
-  const { skipped } = await guarded(async () => {
-    refuseIfDamaged(loadOverrides());
-    return entry.kind === 'all' ? restoreAllOverrides(entry.values) : restoreOverrides(entry.before, entry.wrote);
-  });
-  const total = entry.kind === 'all' ? Object.keys(entry.values).length : Object.keys(entry.before).length;
-  const notPut = skipped.map((k) => `${SETTINGS_BY_KEY.get(k).label} has changed since, so it was not put back.`).join(' ');
-  if (!skipped.length) return 'Restored the earlier settings.';
-  return skipped.length < total ? `Restored the earlier settings, except: ${notPut}` : notPut;
+  if (restoring.has(id)) throw new PanelError('That Undo is already running. Wait for it to finish.');
+  restoring.add(id);
+  try {
+    const { skipped } = await guarded(async () => {
+      refuseIfDamaged(loadOverrides());
+      return entry.kind === 'all' ? restoreAllOverrides(entry.values) : restoreOverrides(entry.before, entry.wrote);
+    });
+    remembered.delete(id); // one successful use; a refused write can still be retried
+    const total = entry.kind === 'all' ? Object.keys(entry.values).length : Object.keys(entry.before).length;
+    const notPut = skipped.map((k) => `${SETTINGS_BY_KEY.get(k).label} has changed since, so it was not put back.`).join(' ');
+    if (!skipped.length) return 'Restored the earlier settings.';
+    return skipped.length < total ? `Restored the earlier settings, except: ${notPut}` : notPut;
+  } catch (err) {
+    if (err instanceof PanelError && Date.now() - entry.at <= UNDO_WINDOW_MS) offerUndo(out, route, { id, ...withSection(form) });
+    throw err;
+  } finally {
+    restoring.delete(id);
+  }
 }
-export const undoSettings = (form) => undoFromMemory('undo-settings', form);
-export const undoExclude = (form) => undoFromMemory('undo-exclude', form);
+export const undoSettings = (form, out) => undoFromMemory('undo-settings', form, out);
+export const undoExclude = (form, out) => undoFromMemory('undo-exclude', form, out);
 
 // ---- Categories tab: Exclude / Include again ----
 
@@ -199,7 +214,7 @@ export function settingsData() {
     ...s,
     settings: SETTINGS.filter((d) => d.section === s.id).map((d) => {
       const e = effectiveSetting(d.key, overrides);
-      const shared = { key: d.key, label: d.label, type: d.type, help: d.help, default: d.default, source: e.source, advanced: Boolean(d.advanced), required: Boolean(d.required), min: d.min, max: d.max, int: d.int, values: d.values };
+      const shared = { key: d.key, label: d.label, type: d.type, help: d.help, default: d.default, source: e.source, advanced: Boolean(d.advanced), required: Boolean(d.required), min: d.min, max: d.max, int: d.int, values: d.values, ...(d.type === 'account' ? { choices: knownAccounts().map((a) => a.name) } : {}) };
       return d.type === 'secret' ? { ...shared, isSet: e.value !== '' } : { ...shared, value: e.value };
     }),
   }));
