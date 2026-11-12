@@ -1,13 +1,13 @@
 # How it works
 
-The details behind the [README](../README.md): how a receipt is matched, split and reviewed, the settings that change each step, and the testing tools. Day to day you don't need `.env` or the command line: the [status page](#the-status-page-webhook-and-actual-link) switches dry run and live, edits descriptions, keywords and many settings, and retries receipts. Every setting named here can be set in `.env`; [`.env.example`](../.env.example) lists them all with their defaults. Run `./receipts restart` after changing one.
+The details behind the [README](../README.md): how a receipt is matched, split and reviewed, the settings that change each step, and the testing tools. Day to day you don't need `.env` or the command line: the [web app](#the-web-app-webhook-and-actual-link) switches dry run and live, edits descriptions, keywords and many settings, and retries receipts. Every setting named here can be set in `.env`; [`.env.example`](../.env.example) lists them all with their defaults. Run `./receipts restart` after changing one.
 
 **What leaves the machine.** By default nothing but your requests to your own Actual and Nextcloud servers. The two optional cloud features, the [cloud reader](#cloud-reader-optional) (sends the receipt photo) and the [hosted decider](#hosted-decider-optional) (sends anonymized text), are off unless you set `READER_PROVIDER=remote` or `DECIDER_PROVIDER=remote`.
 
 **Contents**
 
 - [How a receipt is handled](#how-a-receipt-is-handled): read, match, check, split, review
-- [The status page, webhook and Actual link](#the-status-page-webhook-and-actual-link)
+- [The web app, webhook and Actual link](#the-web-app-webhook-and-actual-link)
 - [Details and limits](#details-and-limits): dates, rules, confidence, outages, private files, GPU
 - [Categorizing, offline mode, and replay tests](#categorizing-offline-mode-and-replay-tests)
 - [Keywords](#keywords)
@@ -35,9 +35,10 @@ The details behind the [README](../README.md): how a receipt is matched, split a
    - If that answer isn't valid JSON or is missing fields, a second pass forces schema-valid JSON.
    - With the optional cloud reader there is a single structured-output request instead (see [Cloud reader](#cloud-reader-optional)).
    - **Cash and return receipts** go straight to review: there's no bank charge to match, and the worker never
-     creates transactions.
-2. **Find the bank transaction.** Your bank sync has already imported the charge, so the worker never creates
-   transactions. It looks for exactly one match:
+     creates a transaction by itself (a cash purchase's page has a Create in Actual button, see Cash purchases below;
+     cash items are categorized first so that page starts from real picks).
+2. **Find the bank transaction.** Your bank sync has already imported the charge, so the worker does not create
+   transactions here (only a cash purchase's page button does). It looks for exactly one match:
    - **Amount:** an outflow equal to the receipt total. With `MATCH_TOLERANCE_PERCENT` set, it may be larger by up to
      that percentage, to allow for tips; any extra amount sends the change to review.
    - **Date:** from 1 day before to `MATCH_DAYS` after the receipt date, because bank posting lags. A charge dated the
@@ -53,7 +54,7 @@ The details behind the [README](../README.md): how a receipt is matched, split a
      already categorized are still matched.
    - **Not imported yet:** if nothing matches while the charge could still post (until the day after the `MATCH_DAYS`
      window), the receipt stays in the inbox and is re-checked every `MATCH_RECHECK_MINUTES` (60) without being read
-     again. **Check for receipts now** on the status page (or `./receipts run-now`) re-checks right away. A **pending** charge is waited on until it clears, up to
+     again. **Check now** (under **Activity and test mode**, or `./receipts run-now`) re-checks right away. A **pending** charge is waited on until it clears, up to
      `MATCH_PENDING_WAIT_DAYS` (2) more days; after that it's applied and reviewed.
 3. **Check the receipt.** Line items must add up to the printed subtotal (within 2%), and the date must be plausible. If prices already include the tax (items add up to the total, and subtotal + tax equals the total), that counts as adding up and no tax is added on top.
 4. **Split.** The amount the bank charged, including any tip, is divided across the receipt's categories by
@@ -83,8 +84,17 @@ The details behind the [README](../README.md): how a receipt is matched, split a
      their prices, so the items add up and the tax spread can run; several groups are corrected only when each line prints
      its taxed amount and all are over. The receipt still goes to review with a note saying so. Items under the subtotal,
      or anything unclear, change nothing.
+     The reader also copies the total savings the receipt prints on a line of its own ("INSTANT SAVINGS $4.00", "YOU SAVED 3.20") into
+     `receipt.savings` (a positive number, null when none; readings from before have no such field). When that equals the gap
+     (within 1 cent), a discount line was almost surely missed. If the items that got a share of the gap are not all in one category,
+     the split between categories may be wrong, so the receipt gets a `#review` doubt (it matters only when money would move, like
+     the other item doubts); when they share one category the category totals are right either way and nothing is flagged. The receipt
+     page shows, above the item editor, a notice saying how much the items were over the subtotal, which items the worker lowered, that
+     this usually means a missed discount line, and what to do (set that item's amount, or use Add a line). The notice also says "The
+     receipt shows savings of 4.00, which matches" when it does, and stays out of the way (no such sentence) for old summaries. It goes
+     away once you type your own amounts for those items; the per-item "as read; lowered by ..." hint works as before.
      Otherwise, and for every reading saved before this existed (they have no marks), tax is spread in proportion to the
-     amounts. The log says when tax was placed by item, or by rate. The receipt's View page shows each item's tax mark after its price and one line under the totals saying how the tax was spread (per rate, over the taxed items, or in proportion with the reason); the worker saves it in the summary as `plan.tax`, and older summaries are explained again from the reading.
+     amounts. The log says when tax was placed by item, or by rate. The receipt's page shows each item's tax mark after its price and one line under the totals saying how the tax was spread (per rate, over the taxed items, or in proportion with the reason); the worker saves it in the summary as `plan.tax`, and older summaries are explained again from the reading.
    - **One category, same as the transaction's:** nothing changes except a `#receipt` note.
    - **One category, different from the transaction's:** the transaction switches to the receipt's category, but only
      if at least one item is clearly sure about the new one (`MOVE_MIN_CONFIDENCE` and `MOVE_MIN_MARGIN`, see below).
@@ -100,6 +110,15 @@ The details behind the [README](../README.md): how a receipt is matched, split a
      like "CEREAL (pipeline: after 3.00 off)". The receipt total and the split still add up to the charge. Any other
      negative line (an exchange such as "MENS SHIRT -19.99", "GIFT CARD -20"), a whole-receipt coupon with nothing above
      it, a discount as big as the item, and returns stay a line of their own, as in the next point.
+   - **A numbers-only line the reader gave a plus sign:** the reader is told that an amount with a minus after it ("5.00-") is
+     negative. If it still returns a line of only item numbers ("0000394696 /56366") as a positive amount while the items are over the
+     printed subtotal (beyond the tolerance above), the worker flips that line to negative, but only when that brings the items closer to the
+     subtotal and overshoots it by 2 cents at most; the best candidate first, more than one only if each still fits (not on a return
+     receipt, not without a subtotal, and not when the prices look tax-included: items near the total, or a gap equal to the tax). If, after
+     the flip, the fold and the tax-line correction, the items still don't add up to the subtotal (2 cents), the receipt gets a doubt and so
+     `#review`; if they do, no review is needed. The receipt page mentions a flipped line either way. It is then folded like any discount, `flippedSign` is saved
+     on the item it went to, and the tax-line correction above may fix what is still missing (for instance a discount line the
+     reader skipped completely).
    - **Returns and coupons:** a category whose items net negative (an exchange, or a coupon bigger than its items)
      becomes a credit part, and the receipt goes to review.
    - **Several categories:** the transaction becomes an Actual split, with one part per category. Each part's note
@@ -130,23 +149,47 @@ to `Needs review` too (`APPLY_THEN_REVIEW=true`, the default):
 Set `APPLY_THEN_REVIEW=false` to hold such receipts for review without changing anything.
 
 
-## The status page, webhook and Actual link
+## The web app, webhook and Actual link
 
-The worker serves the status page (a small control panel) on port 8095. Every request needs the `TRIGGER_TOKEN` key (generated by
+The worker serves the web app (a small control panel) on port 8095. Every request needs the `TRIGGER_TOKEN` key (generated by
 `./receipts setup` or `./receipts start`); `./receipts trigger-url` prints the link and the webhook URL.
 
-- **Status:** the mode, the time of the last check and the 15 most recent receipts (of the current mode) with their results, plus a
-  **Check for receipts now** button. A check started there (or by the webhook or `./receipts run-now`) also re-checks
-  receipts waiting for their bank charge.
-  Each receipt shows a plain status (Waiting for the bank charge, Needs your review, Applied: check it in Actual, Done,
-  Preview (dry run), Failed) with the raw result word in small type and one line saying where the file is (Inbox,
-  Needs review or Processed), whether Actual was changed and what to do. The **What the statuses mean** box above the
-  table lists them all. The result filter still works on the raw word.
-- **Fixing item categories on a receipt's page:** when a bank charge was matched, the receipt's page (View) shows a category
-  menu for each item (Actual's spending categories; excluded ones are marked). **Preview** divides the charge again with the
+- **Navigation:** the top tabs are **Inbox** (with a badge counting the receipts to review), **Archive** and **Settings**, with **+ Add receipt** beside them; phones get the same three tabs as a bottom bar. There is no More menu for navigation: Categories, Category rules, Learned corrections and Privacy (only with a hosted decider) live under Settings.
+- **Inbox list:** receipts of the current mode (archived ones are left out) in three groups: **Review** (needs you, including "check it in Actual"), **Waiting** (for the bank charge, or being read) and **Filed** (collapsed; it opens by itself when you search or open a filed receipt). Every receipt that is not Done is always listed; only Done ones are capped
+  (the newest 100, with a line saying how many older ones are not shown). Each receipt is one row with its name (store and total when known), a short status phrase ("Waiting for the bank", "Paid cash · not in Actual", "Filed"), a short time ("Today 7:17 PM", "Yesterday", "Nov 1") and at most one short line; tapping it opens the receipt's page. The search box filters all groups. On desktop the page opens on "Pick a receipt" (with **Open first in Review**); phones start on the list. Alerts show at the top of the list.
+- **Activity and test mode:** the link at the bottom of the Inbox list opens the diagnostics: the Live / Dry run state, when the worker last checked, **Check now**, the results table with its filters and the legend of statuses, **Switch to dry run** / **Go live...**, and **Archive all done receipts...**. A check started there (or by the webhook or `./receipts run-now`) also re-checks receipts waiting for their bank charge, and returns you to Activity.
+- **Uploading receipts:** **+ Add receipt** sends photos or PDFs picked on the device you are using
+  (a phone offers the camera and the photo library) to the Nextcloud Inbox. It is the same as putting the files there yourself. Types are the
+  Inbox's (JPG, PNG, WebP, HEIC, PDF), checked by name and by the file's first bytes (a HEIC is also recognised by its compatible brands), up to
+  25 MB each. With JavaScript each file is sent in its own request, one after the other, with "Uploading 3 of 20..." and a result per file, so one
+  bad or slow file never sinks the rest, and the check starts once at the end; without JavaScript the plain form sends up to 20 files (100 MB) in
+  one request. A file that doesn't fit is turned away with a reason while the others still go in. A photo whose contents are a different supported
+  type than its ending (a HEIC some phones call `.jpg`) is saved under the ending that fits (`.heic`), because the worker reads a file by its
+  ending. Each file is written under a hidden temporary name (`.upload-<id>-<name>`, skipped by the inbox listing) and renamed when complete, so a
+  half-written file is never read; leftovers older than an hour are deleted at the start of a check. Nothing is replaced: a taken name gets a time
+  stamp before the extension (`IMG_20261105_101530-<stamp>.jpg`, so a camera date at the start of the name still counts), but the very same photo
+  (same name and bytes) is skipped as "already in the Inbox". Names are cleaned (no folders, no leading dot, no control or direction characters, at
+  most 150 bytes). One upload request runs at a time (the next one is asked to try again), and a check starts right away, also in dry run (you then
+  get previews). Like the other buttons it needs the page key; because a form on another site could post to it, a request that the browser marks
+  as coming from another site (`Sec-Fetch-Site`) is refused, while a request without that header (curl) is allowed.
+- **Fixing item categories and amounts on a receipt's page:** when a bank charge was matched, the receipt's page (open a receipt from the list) shows an amount box and a category
+  menu for each item (under **Items & categories**; **Set all items** sets every row at once) (Actual's spending categories; excluded ones are marked). **Preview** divides the charge again with the
   same code the worker uses (tax spread per category, tiny parts merged, `SPLIT_MIN_CENTS`) and lists the parts; it reads
-  nothing from Actual. The button that writes is **Save to Actual** for a receipt the worker already applied (any result
-  except `already-applied`, which was never read), or **Apply to Actual** for one in Needs review with nothing applied.
+  nothing from Actual. The button that writes is **Save changes** for a receipt the worker already applied (any result
+  except `already-applied`, which was never read), or **Apply to Actual** for one in Needs review with nothing applied. When nothing was edited on a receipt that is only waiting for your confirmation, **Looks right** is shown instead of Save changes. **Looks right** only removes `#review` (and records the "confirmed" mark for learning); it has no Undo, in any of its forms (this one, the one on a charge changed in Actual, and **Looks right: clear #review and archive**). Its banner shows the plain Filed state, and an Undo request for it is refused.
+  - *Amounts and added lines:* the amount box takes a decimal with at most 2 places (negative for a discount, up to 100000). Below the
+    items, **Add a line** gives a blank row (description, amount, category and, when the receipt prints tax marks, a tax mark menu) for
+    something the reader skipped; filled rows stay through Preview and a new blank row appears (up to 10 lines; no JavaScript needed).
+    An added line is taxed with the mark you pick (default: the mark of the item above, else the most common mark; "none" is allowed),
+    so the per-rate tax spread still works. The preview says whether the items add up to the receipt's subtotal (or total minus tax when
+    there is no subtotal), green when within 2 cents and a warning otherwise; saving is allowed either way, because the bank charge is
+    what gets divided. What you type is never changed: after your edits the tax-line correction runs again, but it only lowers items you did not edit (if there are none,
+    or one would drop to 0, it leaves the gap). The "items add up" check counts the numbers in the boxes (as read for items you left alone, as
+    typed for the others, plus added lines), and says when the worker had lowered items to match the subtotal. Added descriptions are cleaned (control
+    characters, spaces) and may not contain `|` or `#`. If your edits would make one part bigger than the whole charge, the preview and the save
+    refuse. An item whose amount you change loses the pipeline's notes on it ("after 5.00 off", the tax-line correction). The edits are kept in the
+    summary's `pageFix.amounts` and `pageFix.added`, the preview token covers them, Undo restores them with the categories, and they
+    are not lessons.
   - *Saving* re-reads the charge first and refuses unless it is still exactly what the worker (or your last save from the
     page) wrote: same amount, `#receipt` note, category or split. It then writes the new split (replacing the old one),
     or one category (removing the split), keeps the `#receipt <file>` note and its other notes, and keeps `#review` unless
@@ -160,11 +203,29 @@ The worker serves the status page (a small control panel) on port 8095. Every re
     server's own records and refuses a stale preview (a double click, another tab, a changed setting). A save and a poll cycle
     never overlap: both hold one lock, so a save waits for a running check for up to 20 seconds, otherwise it says the worker is busy
     and changes nothing.
-  - *Learning:* each item whose category you changed becomes a lesson (the shape the sweep makes, marked `via: page`); an item you put
+  - *Learning:* each item whose category you changed becomes a lesson (changed amounts and added lines do not) (the shape the sweep makes, marked `via: page`); an item you put
     back as the worker had it ends its lesson. The watch is replaced by what the page wrote, so the sweep does not learn your own
     change again, and a lesson made on the page survives the sweep unless you later change the same item in Actual. `LEARNING=off`
     writes none of this. A lesson you pressed Forget on is not made again.
-  - *Undo* (15 minutes) puts the charge back as it was (category, notes, children) only if it is still exactly what the page wrote;
+  - *What Actual has now:* the page only knows the saved summary, so when you change a charge in Actual by hand it can look out of date.
+    Each look at a watched charge (the learning sweep, every 6 hours) is kept in `MEMORY_DIR/seen.json`, bounded like the marks, not in
+    the summary files: when it was seen, the items whose category differs from what was filed, a change the items can't be matched to (an
+    amount, a restructured split, one category for the whole charge, the charge gone), and whether `#review` is still in the notes. On an
+    applied receipt (live only) **Check Actual now** (POST `/receipt-check`: key, no cross-site requests, the session lock) opens Actual,
+    reads that one charge, compares it the way the sweep does (or, when it is no longer watched, with what the worker or this page last
+    wrote, as Save does), keeps the look and sends you back with a notice. It never writes to Actual. When Actual differs the item editor is
+    locked (no Preview or Save): each changed item shows "Changed in Actual: ...", the page says "edit it there", and "Looked at Actual 2 h
+    ago" shows. A Save from the page replaces the look (Undo puts the earlier look back), and a look older than the receipt's last change is ignored. Items are matched
+    by their place in the receipt, so two items with the same name are told apart. A Save also refuses when a look newer than its preview found the charge
+    changed, and when a child note of a split was edited in Actual. Lines added on the page are marked in the watch snapshot and are never lessons. With
+    `LEARNING=off` the saved checks (not an old watch snapshot) decide, and a Save drops an old watch entry.
+  - *Reviewed:* a receipt tagged `#review` counts as reviewed once `#review` is gone from the charge's notes in Actual, even when categories
+    were changed too (the sweep and Check Actual now both apply this). It then shows as Done in the Inbox list and on the receipt page, and
+    **Archive receipt** no longer needs to clear anything. This is separate from the learning marks: removing `#review` with no other change
+    is still a *confirmation*, a change is still a *correction* (lessons and provenance read those). Nothing is written to `state.json` for it;
+    the lists read the look. Archiving one from Needs review (one at a time or Archive all) reads the charge again first and refuses if `#review` is back, then drops `+review` from the result so a
+    Restore leaves a Done receipt. (The automatic archiving does not read it yet.)
+  - *Undo* (15 minutes, after Save changes or a cash Create; never after **Looks right**) puts the charge back as it was (category, notes, children) only if it is still exactly what the page wrote;
     otherwise it changes nothing. It also restores the receipt's entry and summary, takes back the lessons and the watch, and moves the file back
     (never over another file). In a dry run the page only previews.
   - The Actual API call that changes an existing split is not checked against the real package in the tests (they use a fake budget):
@@ -172,55 +233,114 @@ The worker serves the status page (a small control panel) on port 8095. Every re
     right the save stops and says to check the charge in Actual.
 - **Dry run and live:** **Go live...** opens a confirmation page with a box to tick; **Switch to dry run** needs no
   confirmation. The switch is saved in `data/settings.json` and applies at the start of the next check (press
-  **Check for receipts now** to make that right away). `./receipts mode dry|live` writes the same file and doesn't
+  **Check now** to make that right away). `./receipts mode dry|live` writes the same file and doesn't
   touch `.env`. Going live processes the receipts already seen in dry run again, for real. Switching to dry run in
   the middle of a check stops it before the next receipt. Once `data/settings.json` exists it is the switch and
-  `DRY_RUN` in `.env` is ignored (the status page, `./receipts mode` and the log say so when the two disagree); delete
+  `DRY_RUN` in `.env` is ignored (the app, `./receipts mode` and the log say so when the two disagree); delete
   the file to go back to `.env`. A `data/settings.json` that can't be read means dry run.
+- **Read again:** a button on the receipt page (under **More**) that runs the reader (the one configured now) on the stored photo once more, so an
+  old receipt gets later reader improvements. It never writes to Actual and is not a correction (no lessons, no marks). The POST
+  (`/receipt-reread`: key, no cross-site requests, the session lock) only sets `reread` on the state entry, checks that the photo still
+  exists and starts a check ("Check now"); the page shows "Reading again..." until the check has done the slow part, so no web request
+  waits for the reader, and a re-read never races a page Save (both run under the session lock). Read again is refused once a real save from the page exists (**Looks right** does not count, and has no Undo), so it never meets an open Undo. In the check:
+  - *waiting for its charge, or a dry-run receipt:* the photo is still in the inbox, `isDue` treats the flagged entry as due, and
+    `processReceipt` drops the saved reading and reads the photo afresh; the result replaces the old reading and the normal flow goes on
+    as if it had been read that way the first time.
+  - *filed and applied:* `rereadFiled` (reread.js) downloads the filed photo and runs the same steps as a first read (`settleReading`:
+    date, cash total, flipped and folded discounts, tax-gap repair; then `categorizeReceipt` against the charge, with the same history,
+    lessons and rules, read-only). Only the reading in the summary (`receipt`, `readWith`, `categorizedWith`, `historyUsed`,
+    `totalCorrected`) is replaced, in the Nextcloud copy; the old reading is kept in `summary.reread.before`, and `summary.plan` (what
+    Actual has) is left as filed, so the Save checks still compare the charge with what the worker wrote. The editor starts from the new
+    reading; changing Actual is the usual Preview and Save changes. A Preview made before the re-read is refused as stale.
+  - *in Needs review without a change to Actual:* not offered; **Try again** already reads it from scratch.
+  The new reading's own doubts (a flipped line, items off the subtotal, uncertain items, a missed discount over several categories) are
+  kept in `summary.reread.doubts` and shown as "About the new reading"; `summary.problems` stays as it was when the receipt was filed
+  and the #review tag in Actual is never added or removed by a re-read (a later Save does that, as always). Every change of the reading
+  gives the summary a new `reread.at`, the page's reading id: the Preview form carries it (`rid`), and a Preview link made for another
+  reading is ignored with a message. "Changed in Actual" labels from before the re-read are matched to the new items by name. The date is
+  judged against the original upload time (`entry.lastmod`, kept when the file is filed), not the filed file's time.
+  **Use old reading** (POST `/receipt-reread-restore`, same protections) puts `summary.reread.before` back (or, for a waiting receipt, the
+  `previousReading` kept on its entry, only if the same reader made it; a finished dry-run receipt keeps none) as long as nothing was saved from the
+  new reading, the receipt is not archived and the charge is not locked. It writes nothing to Actual, learns nothing, gives the summary a new
+  reading id and leaves Read again available. "Mark as checked" alone does not block Read again (it changes no item); a real saved fix does.
+  A re-read that fails never costs the receipt what it has: a waiting receipt keeps its reading and its waiting state, and the failure ends in a note on the page (a timeout or a counted cloud failure is tried up to 3 checks, an unusable answer once). For filed receipts, a real outage of the reader (model server asleep) is not counted (but ends the request after 24 hours) and the model server being down skips the other filed re-reads in that check; a timeout on this photo counts as a try; a switch between dry
+  run and live that is pending refuses the request, and flags left over from another mode are cleared with a note.
+  It is refused (with a plain message, and again when the check gets to it) when a page fix is saved and not undone (the picks and
+  amounts are numbered by item; Undo it first), when a look at Actual found the charge changed (the editor is locked), when the receipt
+  is archived, and when the photo is gone. A reader that fails keeps the request for the next check, three failed checks drop it with a
+  note on the page.
 - **Try again:** shown for live receipts that went to `Needs review` without changing Actual (a review, or a receipt
   that failed 3 times). It moves exactly the file that was filed back to the inbox, deletes its `.json` and clears
   its entry, so the next check reads it fresh. It never overwrites: it refuses when the inbox already has a file with
   that name, when the worker or the `.json` says Actual was changed, or for entries from older versions that don't
   record where the file went. A receipt that was applied and then reviewed has to be undone in Actual first (see
   [Undoing a change](#details-and-limits)); then delete it from `Needs review` and upload it again.
+- **Archiving:** so old photos and list entries stop piling up, a receipt you agree is right can be archived. Archiving only moves
+  and shrinks files and slims the worker's own record; it never changes Actual (except for the case below). It is live only.
+  - *What can be archived:* a **Done** receipt. On its page, **Archive receipt**. Under **Activity and test mode**, **Archive all done
+    receipts...** opens a confirm page that says how many (at most 50 per press) and what happens. A receipt marked **Applied — check it
+    in Actual** can be archived one at a time only, with **Looks right: clear #review and archive** on its page: that first removes `#review`
+    in Actual and changes nothing else about the charge (its split and category stay exactly as they are; it refuses if the charge is no longer what
+    the worker wrote), moves the file to Processed and then archives it; if archiving fails after that, the page says so and you can press the button
+    again at once. Waiting, retrying, review, failed and dry-run receipts are refused. An explicit single **Archive receipt** is allowed immediately after a save or a cash Create, and it ends that save's Undo ("Undo for the last save is no longer available."). **Archive all** and automatic archiving still skip a receipt whose Undo window (15 minutes) is open. A **Looks right** has no Undo, so every kind of archiving treats it as finished at once. Bulk and automatic archiving never touch `#review` receipts.
+  - *If the Archive folder clashes* with another folder (for example `RECEIPTS_PROCESSED=/Receipts` makes the default `/Receipts/Archive` sit inside
+    Processed), archiving is switched off (manual, bulk and automatic) and the Activity page and the Archive tab say why; receipts are still processed and
+    the folder can be fixed under Settings → Connections. The folder is created when the first receipt is archived, not at every check.
+  - *Where it goes:* the photo and its `.json` move to `RECEIPTS_ARCHIVE` (default `/Receipts/Archive`), into a folder for the month of the
+    receipt's own date (`/Receipts/Archive/2026-03`; the month it was filed in when the summary has no date). A name counts as taken when the file or its `.json`
+    exists, and then gets a time stamp in front, as everywhere: no photo and no summary is overwritten. If the photo moved but its summary could not be
+    written (after a second try) the receipt is still archived at the new place, with a warning. The `.json` gets an `archived` note (when, where from, how much the photo shrank).
+    The archive folder may not be, or be inside, Processed or Needs review.
+  - *Shrinking (`ARCHIVE_SHRINK_PHOTOS`, on):* JPG, PNG, WebP and HEIC photos are saved again as JPEG (ImageMagick; HEIC through
+    `heif-convert`; turned upright, metadata removed, at most 2400 px on the long side, quality 82) and kept only when at least 10%
+    smaller, else moved unchanged. The name keeps its base with `.jpg`. PDFs are moved unchanged. The photo is never lost: the smaller copy is
+    uploaded, its size checked and its `.json` written before the original and its old `.json` are deleted; if any step fails the original
+    is moved instead (and the log says why). The full-size photo is gone after a shrink; Restore brings back the small one. A photo that was
+    already missing from Nextcloud still archives the entry; the receipt's page then says the photo was already gone.
+  - *The worker's record:* an archived entry in `state.json` keeps only the result, times, `applied` (so a re-upload under the same
+    name is still recognized), the archive path, an `archived` note and a small `card` (store, date, total). The reading, the decider's
+    answers, the failure counters and the page-fix details are dropped; the receipt page reads the full summary from the archived `.json`.
+  - *Automatically (`ARCHIVE_AFTER_DAYS`, 0 = off):* after each check the worker archives Done receipts whose time (when it was filed, or when
+    it was restored, whichever is later) is that many days old, at most 20 per check. A failure on one receipt is logged and skipped.
+  - *The Archive tab:* a two-pane page: a list pane (search, sort, and one row per receipt with its name, total, "Was Filed · Archived <date>" and an inline **Restore**) beside the selected receipt. The archived receipt opens read-only (photo, items, split and tax line) under an "Archived <date>" banner with **Restore receipt**; its categories can't be
+    changed and Try again is not offered while it is archived. The 15-minute Undo of a category fix is ended by archiving and is refused afterwards, even after a Restore. **Restore** moves the photo and `.json` back to Processed (never over another
+    file), removes the `archived` note and opens the restored receipt in its group in the Inbox list, where `ARCHIVE_AFTER_DAYS` counts again from the restore.
+  - Learning is not affected: it reads Actual and its own files (`data/memory`), never `state.json` or the receipt files.
 - **Times** on the page use `TRIGGER_TIMEZONE`, which setup sets to this computer's time zone.
-- **Receipt view:** each recent receipt has a **View** link with the photo (up to 3 pages of a PDF, which you can
+- **Receipt view:** tapping a receipt in the list opens its page, with the photo (up to 3 pages of a PDF, which you can
   also download), what the reader read, the bank charge, how it was filed and why it went to review. The photo is
   fetched from Nextcloud only for receipts the worker has seen, never from a path in the link. Dry-run results are
   kept for this in `data/dry-summaries/` (the newest 200). The page shows the photo beside the reading and decision on
-  a wide screen, and starts with a **What to do** box that says in plain words what happened in Actual and what to do
-  next. **Previous / Next** (also the left and right arrow keys, except while typing in a field) and the jump menu
-  walk through the same 15 receipts as the list, in the order they had when you pressed **View**: the list's result
-  filter, text filter and sort are added to the View links by the page's script and the server works out the order
-  from them (without JavaScript there is no filter on the list, so the default newest-first order is used). **Back to the list** restores them and scrolls to the receipt. **Try again** is on this page
+  a wide screen, and starts with the receipt's name, status and time, then one status banner with its actions (Try again, Archive receipt, Restore, or Looks right / Save changes) and a short plain-words
+  explanation of what happened in Actual and what to do next (the reasons fold out under the banner; the full reading is under **Receipt details**, and less common actions under **More**). A waiting receipt shows only the banner, **Next receipt** and the photo. After a save (Save changes or a cash Create) the banner reads "Saved" with an **Undo** button, and the list row says "Saved · Undo", for the rest of the 15 minutes even if you leave the receipt and come back; the Undo is hidden while a switch to dry run is pending. After **Looks right** the banner shows the plain Filed state, with no Undo. **Next receipt** (also the left and right arrow keys, except while typing in a field) walks through the receipts of the group you opened it from (Review, Waiting or Filed), in the order the list had, and never leaves that group; the group, the search and the sort are added to the receipt links by the page's script and the server works out the order
+  from them (without JavaScript there is no search on the list, so the default newest-first order is used). The back link (**← Review**, or the group's name) returns to the list and scrolls to the receipt. **Try again** is on this page
   too, under the same rules as in the list; after it succeeds you land on the next receipt. The page ends with a
   collapsible **How this page works**.
 - **Undo:** removing a keyword, a private word or place, marking something "Not a name/place", or saving over a
   category description shows an **Undo** button in the notice. It puts back exactly what was there, including a
   keyword's original date and source. Only the last change can be undone, within 15 minutes. A description that has
   been changed again since is not overwritten.
-- **Sorting and filters:** click a column heading to sort (again to reverse). Each table has a filter box; the status
+- **Sorting and filters:** click a column heading to sort (again to reverse). Each table has a filter box; the Activity
   page also filters by result, the keywords page by category, and the categories page can show only drafts. This
   needs JavaScript; without it the pages still work, unsorted.
-- **Categories** and **Keywords:** edit the category descriptions and add or remove keywords (see
+- **Categories** and **Keywords** (under Settings): edit the category descriptions and add or remove keywords (see
   [Category descriptions](#categorizing-offline-mode-and-replay-tests) and [Keywords](#keywords)). Changes apply
-  at the next receipt, without a restart. The Categories tab lists every spending category from Actual (the worker
+  at the next receipt, without a restart. The Categories page lists every spending category from Actual (the worker
   keeps the list from its last check in `data/known-categories.json`), with an empty box for one that has no
   description yet. **Exclude group** and **Exclude** keep receipts out of a group or category; the **Excluded**
   section at the bottom has **Include again**. These write `EXCLUDE_CATEGORY_GROUPS` and `EXCLUDE_CATEGORIES` as
-  settings of the Settings tab (below), with **Undo**.
-- **Settings:** the same settings as in `.env`, grouped as in `.env.example` (Connections, Matching, Categorizing,
-  Behaviour, Holidays and gift meals). The everyday ones are shown first: Connections (Actual, Nextcloud and the three
-  folders), `MATCH_ACCOUNTS`, `OVERWRITE_CATEGORIZED`, `SPLIT_TRANSACTIONS`, `SPLIT_MIN_AMOUNT`, `APPLY_THEN_REVIEW`,
+  settings (below), with **Undo**.
+- **Settings:** the **Settings** tab opens an overview that links to a page per section: Everyday, Matching and review, Categories, Category rules, Learned corrections, Connections, Appearance and Advanced (plus Privacy when the decider is hosted). Each section page has "← Settings", saves on its own and returns to the same section with its notice and **Undo** (an Undo keeps values you typed but have not saved); **Done** returns to where you came from, such as the receipt you were editing, with its unsaved edits intact. The settings are the same as in `.env`, grouped as in `.env.example` (Connections, Matching, Categorizing,
+  Behaviour, Holidays and gift meals). The everyday ones are shown first: Connections (Actual, Nextcloud and the four
+  folders: Inbox, Processed, Needs review and Archive), `MATCH_ACCOUNTS`, `OVERWRITE_CATEGORIZED`, `SPLIT_TRANSACTIONS`, `SPLIT_MIN_AMOUNT`, `APPLY_THEN_REVIEW`,
   `POLL_SECONDS`, `TRIGGER_TIMEZONE`, `OCCASIONS` and `GIFT_MEAL_MIN`. The tuning ones (match windows and tolerances,
-  confidence bars, the **Keywords and learning** section, history) sit under a closed **Advanced settings** section that opens by itself when one of its
-  settings is set on the page. Saving one form never touches the other's values. Each with its help line, its current value and where
+  confidence bars, the **Keywords and learning** section, history) sit under the **Advanced** section. Saving one form never touches the other's values. Each with its help line, its current value and where
   that comes from. A value saved on the page goes into `data/web-settings.json` (a JSON object of `.env`-style
   strings, mode 600) and wins over `.env`; **Use the .env value** removes one, **Reset all to .env** all of them. The
   worker re-reads `.env` plus that file at the start of every check and updates its settings in place, so no restart
   is needed (a different `POLL_SECONDS` is used for the wait after that check). A value is checked as `.env` values
   are, with the same ranges and spellings, before it is saved, and a bad one saves nothing. If the rebuild fails
-  anyway the earlier settings stay in force and the status page says why. A file that can't be read is ignored with a
+  anyway the earlier settings stay in force and the app says why. A file that can't be read is ignored with a
   warning, and the page refuses to save until you press **Reset all to .env**. Before a change to the Actual or
   Nextcloud address, user, password or the inbox is saved, it is tried (a login to Actual over HTTP, a listing of the
   inbox over WebDAV, each with a separate connection, 15 seconds at most); if the test fails nothing is saved unless
@@ -228,8 +348,9 @@ The worker serves the status page (a small control panel) on port 8095. Every re
   password box keeps the current one, and **Undo** keeps an old password only in the worker's memory, for 15 minutes.
   `./receipts exclude` writes `.env`, so it also removes its two keys from `data/web-settings.json`; what cannot be
   changed here (models, providers, API keys, `TRIGGER_TOKEN`, `DRY_RUN`, paths) stays in `.env`.
+- **Appearance:** under Settings → Appearance, **Theme** (System, Light or Dark) and **Accent** (Blue, Teal, Violet, Rose or Graphite). They are stored per device, in the browser (not in `data/` or `.env`), and apply at once. If the browser blocks storage, the app falls back to System and Blue.
 - **From Actual:** notes on the budget page support Markdown, so a link there works as a button without changing
-  Actual. Paste `[Receipts](<status page URL>)` into a category or group note.
+  Actual. Paste `[Receipts](<app URL>)` into a category or group note.
 - **From your phone or the Nextcloud server:** the page only listens on this machine by default. Set
   `TRIGGER_BIND=0.0.0.0` in `.env` and run `./receipts restart` to reach it from your network.
 - **Keep it private.** The page is plain HTTP and the key is in the link, so keep it on your own network and don't
@@ -243,7 +364,7 @@ The worker serves the status page (a small control panel) on port 8095. Every re
 `@actual-app/api` version your Actual server runs when it starts (this needs internet once per Actual version),
 caches it in `data/actual-api`, and falls back to the version built into the image if it can't. After you upgrade
 Actual, the worker notices within about 10 minutes, restarts itself and installs the matching version. If that
-install fails it keeps the old one and says so on the status page instead of restarting again. With a pinned version
+install fails it keeps the old one and says so in the app instead of restarting again. With a pinned version
 instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`. The API must match the server.
 
 ## Details and limits
@@ -267,7 +388,7 @@ instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`
   shows up from the recent window through the end of the normal search window. Exactly one exact-amount charge must have
   a payee that fits the store, and no other candidate (tip-sized ones included) may have a fitting payee. The match is
   applied but always tagged `#review` and filed in Needs review, even when it only confirms a category.
-  The status page shows the older-charge hint on a waiting receipt.
+  The receipt page shows the older-charge hint on a waiting receipt.
 - **Store names.** Store names can also match through clues on the receipt, such as `target.com`, when the logo is
   cut off. Only website/email domains and multi-word business names count as clues, never a city, and a clue scores
   lower than the store name. History is looked up by the bank's payee name.
@@ -330,7 +451,16 @@ instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`
   remove `#receipt <file>` from the note (otherwise the receipt is treated as already applied and never matched again).
 - **Tips.** A restaurant charge is often higher than the printed total. Set `MATCH_TOLERANCE_PERCENT=25` to allow that;
   matches with a tip are applied and reviewed.
-- **Cash purchases** have no bank charge, so they go to review. The worker never creates transactions.
+- **Cash purchases** have no bank charge, so they go to review (the reason says to use Create in Actual on the receipt's page, or Archive if you entered it by hand). The worker never creates a transaction by itself; it does so only when you press a button on the receipt page, never in dry run:
+  - The receipt is read and its items categorized as usual (a cash purchase has no bank payee, so the store name on the receipt is used). The page shows the item editor (categories, amounts, Add a line, the missed-discount notice) plus an **Account** menu that starts from the **Cash purchases go to** setting (`CASH_ACCOUNT`, one of the open on-budget accounts Actual had at the last check, empty = not set; Create is refused with no account).
+  - **Preview** (a GET) looks at Actual read only, under the session lock for a moment (it says so when the worker is busy): the account, the payee (an existing real payee that fits the store by the same name match as bank payees, else a new one named like the merchant, created only on Create), and any transaction in that account for exactly the receipt total as an outflow within 3 days of the purchase date that carries no `#receipt` note. The preview shows the parts as a matched charge would get them (allocate, mergeParts, tax per item or rate), what it found, and is covered by the token together with the account and the transactions found, so the button refuses if any of that changed.
+  - **Create in Actual** (POST `/receipt-cash`, action `create`; key, no cross-site requests, session lock) adds one transaction: the receipt total as an outflow (the purchase date used, cleared), one category or a split parent with children, notes as the worker writes them on matched charges (`#receipt <file>` plus the items for one category, the parts' notes on a split, `#review` when part is Uncategorized or the items don't add up). Actual runs its rules even with `learnCategories`/`runTransfers` off. The worker saves the planned transaction ID before adding it and records success before reading it back. If a rule changes the categories or split, the worker restores the previewed split and says so. A retry uses the recorded ID instead of adding another transaction. If the earlier add is present, the worker finishes recording it automatically. If it is absent after a full lookup, Preview offers **Retry creation after lookup**, using the original transaction ID. It also lets you keep an existing purchase unchanged. A purchase edited in Actual can be kept through the read-only recovery action. Older interrupted records are recovered from surviving summaries without guessing past item edits.
+  - If a transaction of the same amount was found, the preview offers **Split this one instead** for an entry that is not already split (action `split`): it is treated as the matched charge and goes through the same Apply as a charge in review (all its guards: not already split, not a transfer, not pending, allowed category, account in MATCH_ACCOUNTS), and **Create a new one anyway** stays as the second choice.
+  - Either way the receipt is filed as an applied one: the entry gets `applied` (`created: true` for a new transaction) and `fixedOnPage`, the summary gets `transaction`, `plan` and `pageFix`, the file moves from Needs review to Processed (Review with `#review`), and the learning watch and lessons work as for any page fix (category picks become lessons; amount edits and added lines don't). It shows as Done, **Check Actual now** and Save work on it, and it can be archived.
+  - **Undo** (15 minutes) deletes the created transaction (its parts first), only while it is still exactly what was written (otherwise nothing is deleted), and moves the receipt back to Needs review with its earlier summary (no transaction). Undo of a split onto an existing transaction puts that transaction back as it was and unlinks the receipt.
+  - **Undo** deletes a created transaction only while its date, payee, account, amount, notes and categories still match and it has not been reconciled. It also works if Nextcloud failed to save the new summary. Uncleared entries can be split through the cash page in the chosen account; ordinary bank matching keeps its pending-charge check.
+  - **Archive (I entered it by hand)** is offered on the page for cash and refund receipts in Needs review only (`noChargeKind`); the reason ("cash, entered by hand") is kept with the archive entry, the Archive tab shows the store, date and total, and Restore puts such a receipt back in Needs review, not Processed.
+- **A charge changed by hand in Actual:** **Looks right: clear #review and archive** only needs the same transaction, its amount, the amounts of its parts (as written) and the `#receipt` note: categories and part notes you changed are left alone, only the parent's `#review` is removed, the editor stays locked after archive and restore, no "confirmed" mark is recorded (the learning sweep still judges the change from the watch). If the amounts changed or the note is gone it is refused, and **Archive: keep what's in Actual** files the receipt without opening Actual at all (the result loses `+review`; the watch is kept). A flagged charge whose notes no longer contain `#review` counts as reviewed (Done), also when the `#receipt` note was removed too (`judge` and **Check Actual now** both say so; the sweep does not learn from a charge whose `#receipt` note is gone). A re-read changes nothing in Actual, so it never makes a look at Actual stale. A locked page shows each item's category as Actual has it (the changed item, else the part it was filed in), never the new reading's pick, and "Category now" says Split for a split.
 - **Small parts:** split parts under `SPLIT_MIN_AMOUNT` (default 1.00) are folded into the transaction's current
   category, or into the largest part. The Uncategorized part and credit parts are never folded into a category.
 - **Outages and restarts.** If a model, Actual or Nextcloud is down, the poll stops and retries later; outages never
@@ -341,6 +471,10 @@ instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`
   worker's memory of which receipts it has seen) is damaged, every check fails with a message saying so (in the log)
   instead of quietly starting over. Restore it from a backup, or delete it: receipts already applied are recognized
   by their `#receipt` note and only moved.
+- **Durable filing.** Before moving a photo, the worker saves its intended destination, file version and full summary. If MOVE or summary PUT succeeds but its response is lost, the next check verifies the destination and finishes the same operation. Recovery also runs when Inbox is empty. A new upload under the old filename is kept separate. Page saves and cash creation retain their intended summary until Nextcloud confirms it; a restart or expired Undo window does not discard it.
+- **Nextcloud deadlines.** Every WebDAV request has a 30-second cancellation deadline. Existing photo/summary reads for the panel retain their shorter 15-second deadline. These failures are service outages, so they do not consume a receipt's reading attempts.
+- **Cash totals.** The worker only substitutes subtotal plus tax and tip when the read total equals the recorded cash tendered and exceeds the computed purchase total. The receipt page shows the original and substituted amounts. Without that evidence, it keeps the read total for review; an explicit corrected total is always kept.
+- **Stale edits.** Cash previews cover the full candidate transaction snapshot. Automatic matching checks date, payee, account, amount, clearing, reconciliation, transfer and split status again before writing. Undo of an existing charge also checks the saved identity. Older saves without that identity cannot be undone by the page. Try again shares the session lock with page saves and cannot discard an uncertain cash intent.
 - **Model request timeouts.** Every request to a model has its own time limit: 10 minutes for a reader (local or cloud), 5 for the
   local decider and 2 for the hosted decider. (Node's built-in limit of 300 seconds is raised to just above these, so the limits
   here are the ones that apply.) A request that runs out of time counts as a timeout of the pipeline's own, and so does a
@@ -379,7 +513,7 @@ instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`
 - **No GPU.** Setup notices and sets `LLM_GPU_LAYERS=0`, `DECIDER_GPU_LAYERS=0` and `compose.cpu.yaml` in `.env`, so
   both models run on the CPU (slower, but receipts aren't urgent). If it later finds a GPU, it offers to undo that.
 - **Reprocess a receipt:** for a live receipt in `Needs review` that changed nothing in Actual, press **Try again** on
-  the status page. Otherwise undo the change in Actual (restore the category or remove the split, and remove the `#receipt` note), delete the file from `Needs review` and upload
+  the receipt's page. Otherwise undo the change in Actual (restore the category or remove the split, and remove the `#receipt` note), delete the file from `Needs review` and upload
   the receipt again. Don't move it back by hand: the worker remembers each file by its name and version, so a moved
   file may be skipped, while a new upload is a new receipt.
 
@@ -419,8 +553,8 @@ instead, set `ACTUAL_API_VERSION` to the new version and run `./receipts update`
   - When a spending category has no description, the worker has the reader model write one from that category's past
     transactions (stores, your item notes, amounts). This happens before each batch of receipts (not with a cloud reader), or on demand:
     `./receipts describe` (add `--refresh` to rewrite only the auto ones).
-  - Written entries are marked `"auto": true` (shown as drafts on the status page). Review them, and rewrite any in
-    your own words. Saving one on the status page marks it as yours; in the file, replace the entry with a plain string
+  - Written entries are marked `"auto": true` (shown as drafts on the Categories page). Review them, and rewrite any in
+    your own words. Saving one on the Categories page marks it as yours; in the file, replace the entry with a plain string
     or delete the `"auto"` flag. Yours are never overwritten.
     See `category-notes.example.json` for both forms.
 - **Plain-language item names (`READ_PLAIN_NAMES`) are off.** In testing, the reader decoded "MED-CHILD PIC" (children's books) as "child milk".
@@ -489,7 +623,7 @@ two best keywords with different categories cancel out and the receipt is flagge
   model's pick into a different category is used only if the new pick would pass the same confidence gate it will
   face (staying in the store's category, or moving out of it). Otherwise the model's answer stands, and the item
   records that the keyword was too weak. `off` ignores keywords.
-- **Status page:** the **Keywords** tab lists them, adds them (phrase, category, optional store, strength) and removes
+- **In the app:** the **Keywords** page under Settings lists them, adds them (phrase, category, optional store, strength) and removes
   them. Changes apply at the next receipt. A keyword you remove (there or with the CLI) isn't brought back by an
   `#always` tag.
 - **CLI:** `./receipts keyword add "Pampers" Kids [--at Target] [--always|--usually]`, `keyword remove <phrase> [--at <store>]`,
@@ -536,15 +670,15 @@ Nobody has to teach the pipeline anything. When you fix what it did, it learns. 
     category replaces it. Nothing is remembered as "never again": if the agreeing fixes outnumber the disagreeing ones
     again, the keyword is made again. A merged lesson (the same item fixed on several receipts) keeps every keyword it
     went against. A big receipt you moved whole doesn't count against a keyword. What you do
-    yourself is permanent: removing a keyword (on the Keywords tab or with the CLI) or pressing Forget on a lesson means
+    yourself is permanent: removing a keyword (on the Keywords page or with the CLI) or pressing Forget on a lesson means
     it isn't learned again.
   - **Two size limits.** A learned keyword only applies to charges up to twice the size of what it learned from, and at
     least $30 (the small part or small receipt, or the whole charge for a lone item). It also only applies to items up to
     twice the largest price it learned from, and at least $5 (`maxItemCents`), so "COKE" learned from a $1.58 can at the
     food court doesn't file a $15.49 case on a grocery run. Both must pass. If the charge or the item's price isn't known, a
     keyword with that limit is skipped. Lessons from before item prices were kept give no item limit. Keywords you make
-    have no limits. The Keywords tab and `keyword list` show both.
-- **The Learned tab** on the status page lists the lessons and learned keywords. **Forget** drops a lesson, and it
+    have no limits. The Keywords page and `keyword list` show both.
+- **Learned corrections** (under Settings) lists the lessons and learned keywords. **Forget** drops a lesson, and it
   isn't learned again from that charge. **Undo** brings it back.
 - **`LEARNING`:** `on` (default) learns and uses it. `record` learns but doesn't use it, to compare. `off` does nothing:
   no sweep, and nothing is read. `MEMORY_DIR` (default `/data/memory`) is where the files are. If a file is damaged, it's
@@ -614,7 +748,7 @@ models), or refuses a `temperature`, it retries once with that fixed. OpenRouter
 
 **Errors.** How the worker treats each kind of failure from a cloud reader:
 
-- **Setup problems pause processing** without using up any receipt's attempts, and the status page shows a banner. These are: a
+- **Setup problems pause processing** without using up any receipt's attempts, and the app shows a banner. These are: a
   refused key (401, or a 403 that is not about content or region); 402 (no credit); 404 (wrong model name or address); a 429 that
   says the quota is used up (`insufficient_quota`); a 403 about an unsupported region; and a 400 that says the model doesn't exist.
   Fix `READER_API_KEY` (or the other setting) and run `./receipts restart`.
@@ -653,7 +787,7 @@ reader is remote, and last), say so in one line when they change it, then start 
 
 **Running it.** `./receipts start` and `status` leave out the `llm` container (the overlay `compose.remote-reader.yaml` puts it
 in a profile nothing turns on, and removes it from the worker's `depends_on`). With both the reader and the decider hosted, only the
-worker runs. The status page shows the reader as "model (remote: host)" and a notice that photos leave the machine, and the
+worker runs. The app shows the reader as "model (remote: host)" and a notice that photos leave the machine, and the
 worker logs one line at startup saying so. `./receipts check` tests the address and the key without sending a photo (some
 providers list models without checking the key; then a wrong key shows at the first receipt).
 
@@ -690,8 +824,8 @@ item lines with their prices instead of a single item) and goes through the same
 **How names and places are found.** In two ways, and every text is checked both ways:
 
 1. **Your own lists:** first names, nicknames and pet names (`PRIVATE_WORDS`), and your town, street or ZIP code
-   (`PRIVATE_PLACES`). Setup asks for the names; both seed the lists once, and you edit them on the status page under
-   **Privacy**.
+   (`PRIVATE_PLACES`). Setup asks for the names; both seed the lists once, and you edit them under
+   **Settings → Privacy**.
 2. **A scan by the reader model** (the local one, unless you chose the cloud reader: then these texts go to its provider), which marks private people's names and places in everything about to be
    sent, 12 texts at a time. Results are cached in `data/name-scan-cache.json`, so each text is scanned once.
    - Receipt lines are product text, so a name found in one only counts if the line also says something like FOR,
@@ -708,7 +842,7 @@ not what it was. If the scan can't run because the reader is down, the check sto
 until you fix or delete it. The worker never writes over it.
 
 **Errors.** A rejected key (or a request Jev can't accept) pauses processing without using up any receipt's
-attempts, and the status page shows a banner. Fix `DECIDER_API_KEY` in `.env` and run `./receipts restart`. If Jev
+attempts, and the app shows a banner. Fix `DECIDER_API_KEY` in `.env` and run `./receipts restart`. If Jev
 refuses one item, only that item becomes unsure. Failures are counted per receipt exactly as for the cloud reader: a 504, 524,
 408, a timeout or an unreadable answer counts (three checks in a row is a failed attempt); 429, other 5xx and connection errors
 are an outage that stops the check without counting. Answers already paid for are kept on the receipt's entry in `data/state.json`

@@ -1259,7 +1259,7 @@ setup_next_steps() {
   say ""
   say "Done. Next:"
   say "  1. Upload a test receipt to the Nextcloud inbox folder."
-  say "  2. Open the status page (below) and press \"Check for receipts now\". Dry run: nothing is changed."
+  say "  2. Open the status page (below) and press \"Check now\". Dry run: nothing is changed."
   say "  3. When the results look right, press \"Go live\" on the same page."
   say ""
   say "The status page is also where you edit category descriptions and keywords, and retry receipts."

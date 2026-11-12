@@ -33,7 +33,7 @@ them on, and both are explained under [Privacy](#privacy).
 2. **The reader reads it.** A vision AI model running on your computer (the *reader*) reads the store, date, total and
    every line item.
 3. **It finds the bank charge.** Your bank sync has already put the charge into Actual. The pipeline finds it by
-   amount, date and store name. It never creates transactions.
+   amount, date and store name. It never creates transactions by itself; for a cash purchase (no bank charge) you can press **Create in Actual** on the receipt's page, after a preview.
 4. **The decider picks categories.** A second AI model (the *decider*) chooses a budget category for each item. It
    learns from how you filed past purchases at the same store, from your category descriptions and from your keywords.
 5. **It files the result.** The charge is recategorized, or split by category, and the receipt moves to
@@ -74,41 +74,57 @@ Setup asks before anything big, and you can run it again at any time (it only as
 5. offers to create the `Receipts/Inbox` folder in Nextcloud;
 6. starts everything, tests the connections, and writes a first description for each of your budget categories from
    your past transactions;
-7. prints the link to your **status page**.
+7. prints the link to your **receipt app** (the web page where you review receipts and change settings).
 
 ## Your first receipt
 
 1. Upload a receipt for a purchase that is already in Actual to `Receipts/Inbox`.
-2. Open the status page and press **Check for receipts now**. It shows what it *would* do. Nothing is changed yet. (The
+2. Open the app and go to **Activity and test mode** (at the bottom of the Inbox list), then press **Check now**. It shows what it *would* do. Nothing is changed yet. (The
    details are in `./receipts logs`.)
-3. When the results look right, press **Go live**. Receipts it already looked at in dry run are then processed for real.
+3. When the results look right, press **Go live** (also under **Activity and test mode**). Receipts it already looked at in dry run are then processed for real.
 
 ## Everyday use
 
 Upload receipts. That's all. The pipeline checks the inbox every 5 minutes and keeps running after a reboot. The models
 unload themselves after 5 idle minutes, so the graphics card is free between receipts.
 
-The **status page** is your control panel. Its link contains a secret key, so open it from the link setup printed, or
+The **receipt app** is your control panel. Its link contains a secret key, so open it from the link setup printed, or
 run `./receipts trigger-url` to print it again (`http://localhost:8095` without the key says "forbidden"). Bookmark it,
-or paste it as a link into an Actual note. From it you can:
+or paste it as a link into an Actual note. It has three tabs at the top (a bottom tab bar on phones): **Inbox** (with a badge counting the ones to review), **Archive** and **Settings**, plus **+ Add receipt**. From it you can:
 
-- see recent receipts and what happened to each, and open one to see its photo, what was read, and why it went to
-  review. A receipt's page has a **What to do** box, **Previous / Next** (or the arrow keys) and a menu to move through
-  the receipts in the order and filter of the list, **Try again**, and a **How this page works** section;
-- check the inbox right now;
-- switch between dry run and live (it takes effect at the next check);
-- edit your category descriptions and keywords, with an **Undo** button after a removal;
-- exclude category groups or single categories that receipts should never go to (**Categories** tab);
-- change many of the settings below without editing `.env` (**Settings** tab; a value saved there wins over `.env`);
+- open receipts from the **Inbox** list, grouped into **Review**, **Waiting** and **Filed** (Filed starts collapsed). Desktop shows the list beside the receipt and opens on "Pick a receipt"; phones start on the list. Each receipt has one status banner at the top, with its actions. **Receipt details** holds the full reading and diagnostics, and a **More** menu on the receipt holds the less common actions. A waiting receipt shows only its banner, **Next receipt** and the photo. **Next receipt** stays within the group you opened the receipt from;
+- search the list, which filters all three groups;
+- on an unapplied receipt, open **Find a charge** to correct the merchant, purchase date, total or payment method. Search for an existing charge without changing Actual, then choose it and **Save changes**. You can also keep checking automatically with your corrections. Choosing a charge already split or reconciled keeps its contents in Actual and lets you archive the receipt;
+- check the inbox right now, or **upload receipt photos and PDFs** with **+ Add receipt** (same as putting them in the Nextcloud Inbox);
+- open **Activity and test mode** (a link at the bottom of the Inbox list) for the recent-results table, the dry run / live switch (it takes effect at the next check), **Go live** and **Archive all done receipts**;
+- under **Settings**, edit your **Categories** (descriptions and keywords, with an **Undo** button after a removal), **Category rules** and **Learned corrections**, and exclude category groups or single categories that receipts should never go to;
+- change settings from the **Settings** overview, which links to a page per section: Everyday, Matching and review, Categories, Category rules, Learned corrections, Connections, Appearance and Advanced (plus Privacy with a hosted decider). Each section saves on its own and returns to the same section; **Done** returns to where you came from. **Help and options** explains a setting or restores its setup value;
+- choose how the app looks under **Settings → Appearance**: Theme (System, Light or Dark) and Accent (Blue, Teal, Violet, Rose or Graphite). These are stored per device, in the browser, not on the server;
 - press **Try again** on a live receipt that went to review without changing anything in Actual;
-- **fix a receipt's item categories** on its page, without going into Actual: pick another category for an item, press
-  **Preview** to see the charge divided again (tax included), then **Save to Actual** (a receipt already applied; the
-  split is rewritten) or **Apply to Actual** (a receipt in Needs review with a matched charge; it also moves the file to
-  Processed). Each item you change is a lesson, as if you had corrected it in Actual. There is an **Undo** for 15
-  minutes, and nothing is written in a dry run.
+- press **Read again** to read the photo once more with today's reader. The request does not change Actual. For a purchase already filed, review the new reading before saving;
+- edit any item's category or amount. The split preview updates as you type, including tax. **Save changes** updates the existing charge; **Looks right** is shown instead when nothing was edited, and confirms a review without rewriting its split: it only removes the `#review` tag, and has no Undo (the receipt shows as Filed right away). For a cash purchase, **Create in [account]** adds the transaction after a preview, a duplicate check and a separate confirmation. Corrections become lessons, and after **Save changes** or a cash Create, **Undo** is offered on the receipt for the rest of the 15 minutes, even after you leave and come back. Nothing is written in a dry run.
 
-The status page uses plain HTTP and anyone with the link can use it, so keep it on your own network and keep the link
+Choosing an existing charge starts the receipt items in that charge's category, while keeping saved item corrections. For a purchase that belongs in one category, **Set all items** changes the items and added discounts together. You can still adjust individual rows before saving. Existing split or reconciled charges keep their contents in Actual.
+
+Unsaved receipt edits stay in this tab while you move between receipts or open Settings (**Done** brings you back to them). They are lost when the tab reloads or closes, so the browser warns before leaving. Without JavaScript, the same server forms use an explicit Preview step.
+
+The app uses plain HTTP and anyone with the link can use it, so keep it on your own network and keep the link
 private.
+
+**Archiving.** When you agree a receipt is right, press **Archive receipt** on its page (or **Archive all done
+receipts** under **Activity and test mode**). Its photo and summary move to `Receipts/Archive/<year-month>`, the photo is saved again as
+a smaller JPEG (turn that off with `ARCHIVE_SHRINK_PHOTOS`), and the receipt moves to the **Archive** tab, a two-pane
+page where you can search, sort, open it and **Restore** it (Restore opens the receipt again in its group). You can archive a single
+receipt right after saving it; that ends the Undo of that save ("Undo for the last save is no longer available."). **Archive all** and
+automatic archiving skip receipts still inside the 15-minute Undo window. A receipt confirmed with **Looks right** has no Undo, so it can be archived
+at once. A receipt marked "check it in Actual" can be archived one at a time: that first removes its `#review` tag. Set `ARCHIVE_AFTER_DAYS` to archive Done receipts by themselves after that many days (off by
+default). Nothing is archived in a dry run.
+
+For a wrong or unmatched receipt in Needs review, choose **Archive receipt** on its page. This moves the receipt out of Review without changing any transaction or notes in Actual. You can restore it from Archive later.
+
+Interrupted file moves and receipt-summary saves retry automatically, including after a restart. Stalled Nextcloud requests stop after 30 seconds. An interrupted cash creation is looked up by its original transaction ID: an existing purchase is recovered, and an absent one requires an explicit retry after Preview. Later edits in Actual are kept, and stale previews or Undo requests are refused. These protections require no extra settings.
+
+After setup, the app manages the Nextcloud receipt folders. Upload through the app or into Inbox; use the app for corrections, retries and archiving. Normal receipts continue automatically without any of these exception actions.
 
 **Receipts that need review** keep their reason in a `.json` file next to them in `Receipts/Needs review`. Whatever the
 pipeline did apply is tagged `#review` in Actual. Unsure items are put in the store's usual category, or in an
@@ -119,16 +135,16 @@ pipeline did apply is tagged `#review` in Actual. Unsure items are put in the st
 It gets better the more it knows about who buys what.
 
 - **Category descriptions.** One or two sentences per category about what belongs in it ("the kids' clothes, toys and
-  diapers"). Setup writes a first draft from your past transactions. Edit them on the status page in your own words.
+  diapers"). Setup writes a first draft from your past transactions. Edit them under **Settings → Categories** in your own words.
 - **Keywords.** For things a description can't capture: a brand that always goes to one person, a store where
-  everything is for the kids. Add them on the status page, or right in Actual:
+  everything is for the kids. Add them under **Settings → Categories**, or right in Actual:
   - type `#always Pampers` in the note of a split part, and from then on Pampers always go to that category;
   - `#usually` does the same, but as a strong hint instead of a rule.
 - **Your own splits.** When you split a charge by hand, a word or two in each part's note ("diapers", "DVDs") teaches
   it what goes where.
 - **Your fixes.** When the pipeline files a charge and you later change a category in Actual, it notices (every few
   hours) and remembers. After you make the same fix a couple of times at one store, it adds a keyword for it. The
-  **Learned** tab on the status page shows what it learned, and **Forget** drops anything wrong. Learning only runs in
+  **Learned corrections** page under Settings shows what it learned, and **Forget** drops anything wrong. Learning only runs in
   live mode. To switch it off, set `LEARNING=off` in `.env`.
 
 More detail: [Keywords](docs/how-it-works.md#keywords) and
@@ -148,9 +164,9 @@ You don't need these day to day. `./receipts help` lists them.
 | `./receipts status` | Mode, whether everything is running, any alert, the last log lines |
 | `./receipts logs` | Follow the log as receipts are processed (Ctrl-C stops watching; it keeps running) |
 | `./receipts check` | Test the connections to Nextcloud, Actual and the models (changes nothing) |
-| `./receipts run-now` | Check the inbox now, like the button on the status page |
-| `./receipts mode` | Show the mode; `mode dry` or `mode live` switches it, like the status page switch (`live` asks you to confirm) |
-| `./receipts trigger-url` | Print the status page link and the webhook address again |
+| `./receipts run-now` | Check the inbox now, like the button in the app |
+| `./receipts mode` | Show the mode; `mode dry` or `mode live` switches it, like the app's switch (`live` asks you to confirm) |
+| `./receipts trigger-url` | Print the app link and the webhook address again |
 | `./receipts exclude` | Pick the category groups (and single categories) receipts never go to, such as bills and savings; restarts the worker |
 | `./receipts describe` | Write descriptions for categories that have none (`--refresh` rewrites the auto-written ones; with a cloud reader it asks first) |
 | `./receipts keyword …` | Add, remove, list and test keywords, e.g. `keyword add "Pampers" Kids --always` |
@@ -162,17 +178,17 @@ You don't need these day to day. `./receipts help` lists them.
 Every setting lives in `.env`. [`.env.example`](.env.example) lists all of them, each with a short comment and its
 default. Setup fills in the required ones. Run `./receipts restart` after editing `.env`. Many of them (the connections to
 Actual and Nextcloud, matching, categorizing, the check interval, holidays, keywords and learning) can also be changed on
-the status page's **Settings** tab (everyday settings first, tuning ones under **Advanced settings**): each shows where its value comes from (`.env`, this page or the default), a
+the app's **Settings** pages (everyday settings first, tuning ones under **Advanced**): **Help and options** shows where each value comes from (`.env`, this page or the default), a
 **Use the .env value** button undoes an override, and a change applies at the start of the next check, without a
 restart. A value saved there is kept in `data/web-settings.json` and wins over `.env`; `./receipts status` says so when
-that file exists. Models, GPU, providers and API keys, the status page's own key and every file path stay in `.env`. The
+that file exists. Models, GPU, providers and API keys, the app's own key and every file path stay in `.env`. The
 ones you are most likely to want:
 
 | Setting | What it does |
 |---|---|
 | `MATCH_TOLERANCE_PERCENT=25` | Allows restaurant tips (the charge is higher than the receipt) |
 | `MATCH_ACCOUNTS` | Only look for charges in these Actual accounts |
-| `EXCLUDE_CATEGORY_GROUPS` | Category groups receipts never go to, such as bills and savings (`./receipts exclude` sets it; single categories go in `EXCLUDE_CATEGORIES`). The status page hides them too |
+| `EXCLUDE_CATEGORY_GROUPS` | Category groups receipts never go to, such as bills and savings (`./receipts exclude` sets it; single categories go in `EXCLUDE_CATEGORIES`). The app hides them too |
 | `DECIDER_MODEL` | The decider model. Setup picks d3-flash 9B when your graphics card has 14 GB or more, else d1-2B. Run `./receipts download-models` after changing it |
 | `READER_LOCAL_MODEL` | A different reader model (see below) |
 | `LEARNING=off` | Turns off learning from your corrections |
@@ -260,7 +276,7 @@ use the cloud reader). What is sent, always anonymized first (there is no switch
 
 **Never sent:** the photo, card digits, the payment method, addresses, the printed date, and calendar event names.
 
-Names are found from your own lists (`PRIVATE_WORDS`, `PRIVATE_PLACES`, editable on the status page under **Privacy**)
+Names are found from your own lists (`PRIVATE_WORDS`, `PRIVATE_PLACES`, editable under **Settings → Privacy**)
 and by a scan from the reader. No automatic scan is perfect, so before switching, run
 `./receipts replay --preview-remote <folder>` to see exactly what would be sent. It sends nothing to the hosted decider.
 (With a cloud reader the photos still go to the reader's provider.) More detail:
@@ -275,15 +291,15 @@ and by a scan from the reader. No automatic scan is perfect, so before switching
   `./receipts restart`. That moves the decider to the processor and frees about 2.5 GB. If another app shares the card,
   also set `MODEL_SLEEP_SECONDS=-1` so the models never give their memory back.
 - **A receipt went to review:** its `.json` says why. If nothing was changed in Actual, fix the cause (a keyword, a
-  payee alias) and press **Try again** on the status page. If a charge was matched you can instead fix the item categories on the receipt's page and press **Apply to Actual**. Otherwise fix the charge in Actual by hand. For a badly read
+  payee alias) and press **Try again** on the receipt's page. If a charge was matched you can instead fix the item categories on the receipt's page and press **Save changes**. Otherwise use **Find a charge** or fix the charge in Actual by hand. For a badly read
   photo, upload a clearer one.
 - **The store name never matches the bank's name:** copy `payee-aliases.example.json` to `data/payee-aliases.json` and
   list the different spellings of each store together.
-- **The status page says "forbidden":** the link needs its key. Run `./receipts trigger-url` and use that link.
+- **The app says "forbidden":** the link needs its key. Run `./receipts trigger-url` and use that link.
 
 ## More reading
 
-- [How it works](docs/how-it-works.md): matching, splitting, tax, review rules, the status page, keywords, learning,
+- [How it works](docs/how-it-works.md): matching, splitting, tax, review rules, the app, keywords, learning,
   the webhook, replay tests, and the cloud reader and hosted decider in detail.
 - [Research](docs/research.md): how the models and defaults were chosen, with test results and hardware notes.
 - [`.env.example`](.env.example): every setting with its default.
