@@ -76,7 +76,7 @@ past items with `SIMILAR_ITEMS=true`, [section 5](#5-general-descriptions-plus-k
 - **Pick right:** the top category is the household's. **Filed right:** so is what's filed after the confidence gates.
 - **Leave-one-out:** the purchase being tested is hidden from the store history and item notes. The results below were measured
   before replay and `item-test` also hid everything dated after the purchase, so they could lean on later notes; see
-  [How it works](how-it-works.md#categorizing-offline-mode-and-replay-tests) for what is hidden now and what still leaks.
+  [Replay tests](testing.md#what-the-tests-dont-see) for what is hidden now and what still leaks.
 - **Average match:** per receipt, the share of the charge filed in the household's own categories. **Exact** counts
   receipts where all of it was.
 
@@ -320,7 +320,7 @@ keywords were partly taken from the test items, so their rows say more about mat
 **Can the decider run in the cloud without anything personal leaving the machine?** Yes, and it did at least as well
 as the best local decider. TypeSafe's hosted Jev (`jev-latest`, 1.14) answers the same `/v1/systemone` questions as
 the local GGUF models, so `DECIDER_PROVIDER=remote` only changes where the request goes. The reader stayed local in that test, and
-every request is anonymized first ([how](how-it-works.md#hosted-decider-optional)): category names become codes,
+every request is anonymized first ([how](cloud.md#hosted-decider)): category names become codes,
 dates become relative, people become Person A…, and places become "a city". Anonymized text about the purchases still
 leaves the machine, so this is a trade-off, not a free upgrade; the default stays local.
 
@@ -644,3 +644,32 @@ hand-made splits you have and how personal your categories are.
   the item test compares models with each other rather than measuring real-world accuracy.
 - The new descriptions were written from the same misses they were tested on.
 - Speeds are for one RX 7900 XT on Vulkan. Other cards and backends will differ.
+
+## Idea for later: a small OCR reader plus the decider
+
+Not built; noted so it can be tried some day. OCR (optical character recognition) means copying printed text out of an image. Today one general vision model (Qwen3.5-4B, about 5.5 GB of graphics memory)
+both reads the receipt and follows a long set of rules about how to write it down. The idea is to split the work cleanly:
+
+1. **A small OCR model only copies what is printed** into a short JSON template, in the template style these models are
+   trained on: store, date as printed, item lines with their amounts and tax marks, tax lines, subtotal, total, payment and
+   cash given. OvisOCR3, Xiaomi-OCR-0 and GLM-OCR are about 1 GB each and already do template extraction.
+2. **Code does the interpreting** the general model does now: turn the printed date into the required format, tell a
+   return from the sign of the total, and check that the items add up to the subtotal (as it already does).
+3. **The decider does all the deciding**, as now. Because it answers choice questions, it could also settle the unclear
+   reading cases if they are asked as choices: "is this line a discount on the item above, or an item?", "which of these
+   lines is the total?". That costs extra decider calls per receipt.
+
+**Why it's worth trying:** the reader would shrink from about 5.5 GB to about 1–1.5 GB. On a 6–8 GB graphics card that
+leaves room for the bigger decider, which is where most of the remaining misses are, so the pipeline would run well on
+much more hardware. On a 20 GB card it changes little.
+
+**What's hard:** some of what looks like reading is judgment, and the OCR model or the code has to get it right: discount
+and coupon lines (minus amounts), "Manual Weight" lines, voided items, items wrapped onto two lines, which number is the
+total when the receipt also shows balance due, cash given and change, and which tax line goes with which tax mark.
+
+**What the first test suggests** ([research.md section 10](#10-newer-readers-a-9b-general-model-and-three-small-ocr-models)):
+the OCR models were given the general model's instructions, which isn't their style, and still OvisOCR3 got 24 of 26
+totals right and scored 96% on the receipts it could match. Its misses were mostly dates copied as printed, which code can
+fix. Its weak spot was item lines (16 of 26 added up, against Qwen's 20), which code can't easily fix. Start with
+OvisOCR3: a template prompt in its own style, the date and return handling moved into code, then the same replay test
+against Qwen3.5-4B and the household's answers.

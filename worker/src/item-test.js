@@ -11,7 +11,7 @@
 // answers; --with-memory uses it (other transactions' lessons only).
 // Usage: node src/item-test.js <name> <backend: decider|rules> [--allow-remote] [--include-pipeline] [--with-memory]
 // With DECIDER_PROVIDER=remote the decider backend would send every one of those items (anonymized as far as the
-// anonymizing goes: see docs/how-it-works.md) to the hosted service, up to a year of them, so it refuses unless you add --allow-remote.
+// anonymizing goes: see docs/cloud.md) to the hosted service, up to a year of them, so it refuses unless you add --allow-remote.
 // With a cloud reader as well, the name scan sends those split notes to the reader's provider raw (CLOUD_NAME_SCAN=true is needed for that).
 // "Filed" is what the worker would do with the pick (receipt.js settleUnsure: store category, Uncategorized).
 // With APPLY_THEN_REVIEW=false the worker would send a receipt with unsure items to review instead; this test still

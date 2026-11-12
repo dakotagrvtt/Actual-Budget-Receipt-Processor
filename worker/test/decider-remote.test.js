@@ -38,10 +38,11 @@ afterEach(() => {
 const reply = (choice, confidence, probabilities) => ({ answers: { category: { choice, confidence, ...(probabilities ? { probabilities } : {}) } }, usage: { input_tokens: 1000 } });
 
 /**
- * Mock fetch. `names` = the names the reader "finds" in any text containing them; `api(body, init, n)` answers the hosted API.
+ * Mock fetch. `names` = the names the reader "finds" in any text containing them (only in fields `nameFields`, when given);
+ * `api(body, init, n)` answers the hosted API.
  * Returns what was seen: the reader calls, the API calls (body + headers).
  */
-function mockWorld({ names = [], api = () => reply('C01', 0.9), reader, flagStores = false, places = () => [] } = {}) {
+function mockWorld({ names = [], api = () => reply('C01', 0.9), reader, flagStores = false, places = () => [], nameFields = null } = {}) {
   const seen = { reader: [], api: [] };
   mock.method(globalThis, 'fetch', async (url, init) => {
     const u = String(url);
@@ -50,7 +51,7 @@ function mockWorld({ names = [], api = () => reply('C01', 0.9), reader, flagStor
       seen.reader.push(body);
       if (reader) return reader(body);
       const list = JSON.parse(body.messages.at(-1).content);
-      const results = list.map((e) => ({ id: e.id, places: places(e.text, e.field), names: e.field === 'store or payee name' && !flagStores ? [] : names.map((n) => new RegExp(n, 'i').exec(e.text)?.[0]).filter(Boolean) }));
+      const results = list.map((e) => ({ id: e.id, places: places(e.text, e.field), names: (e.field === 'store or payee name' && !flagStores) || (nameFields && !nameFields.includes(e.field)) ? [] : names.map((n) => new RegExp(n, 'i').exec(e.text)?.[0]).filter(Boolean) }));
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ results }) } }] }));
     }
     if (u.startsWith('https://api.typesafe.test/v1/systemone')) {
@@ -759,4 +760,74 @@ test('hosted decider: counted failures are timeouts, 504, 524, 408 and unreadabl
   const body = new Response('x');
   body.text = async () => { throw new TypeError('terminated'); };
   assert.deepEqual(await kinds(() => body), [true, true]);
+});
+
+// ---- category names: a short name or group name that names a person ----
+const LABEL_FIELD = 'name of a budget category, written "group / category"';
+const KID_LABELS = ['Daily Expenses / Coffee', 'Kids / Alex', 'Fun / Gifts'];
+
+test('category names: a person named by a category ("Kids / Alex") is hidden in a note, a description and an item line; ordinary category words stay', async () => {
+  fs.writeFileSync(config.categoryNotesPath, JSON.stringify({ 'Kids / Alex': "Alex's school things" }));
+  // the reader flags Alex only in the category name itself, never in the other texts
+  const seen = mockWorld({ names: ['Alex'], nameFields: [LABEL_FIELD] });
+  const r = receipt('SOCCER SOCKS ALEX', 'COFFEE BEANS');
+  const history = [{ date: '2026-10-01', amount: 30, parts: [{ category: 'Kids / Alex', amount: 30, notes: 'soccer cleats for Alex' }] }];
+  const itemHistory = [{ items: 'Coffee filters', category: 'Daily Expenses / Coffee', store: 'Target', date: '2026-09-01' }];
+  await categorizeItems(r, KID_LABELS, history, itemHistory, { businessNames: ['Target'] });
+  assert.equal(seen.api.length, 2);
+  const state = seen.api[0].body.state;
+  assert.equal(state.item, 'SOCCER SOCKS Person B'); // Sam (seed) is A
+  assert.equal(state.other_items_on_receipt[0], 'COFFEE BEANS'); // an ordinary category word is not touched
+  assert.deepEqual(state.past_purchases_at_this_store[0].filed_as, ['C02 30 (soccer cleats for Person B)']);
+  const criteria = seen.api[0].body.questions.category.criteria;
+  assert.equal(criteria.C02, "Person B: Person B's school things");
+  assert.match(criteria.C01, /^The "Coffee" budget category \(group: Daily Expenses\)$/);
+  assert.equal(seen.api[1].body.state.item, 'COFFEE BEANS');
+  assert.deepEqual(state.items_this_household_filed_before.C01, ['Coffee filters']); // the past item note (no payee, so no store)
+  assert.ok(!/alex/i.test(allText(seen)), allText(seen));
+  // the category names were scanned as such, and the name is remembered for the Privacy page
+  const asked = seen.reader.flatMap((b) => JSON.parse(b.messages.at(-1).content));
+  assert.deepEqual(asked.filter((e) => e.field === LABEL_FIELD).map((e) => e.text).sort(), [...KID_LABELS].sort());
+  assert.deepEqual((await loadPrivate()).found.map((f) => f.word), ['Alex']);
+  // cached: the next receipt does not scan the category names again
+  const calls = seen.reader.length;
+  await categorizeItems(receipt('COFFEE BEANS'), KID_LABELS, [], [], { businessNames: ['Target'] });
+  assert.equal(seen.reader.length, calls);
+  assert.ok(!/alex/i.test(allText(seen)));
+});
+
+test('category names: a hidden category (not a choice for this receipt) is scanned too; a place in a category name is replaced', async () => {
+  config.excludeGroups = ['Trips'];
+  const seen = mockWorld({ names: ['Jo'], nameFields: [LABEL_FIELD], places: (t, field) => (field === LABEL_FIELD ? KC(t) : []) });
+  await categorizeItems(receipt('GIFT JO', 'MAP FAKE FALLS'), [...LABELS, 'Trips / Fake Falls', 'Family / Jo'], [], [], { businessNames: ['Target'] });
+  assert.equal(seen.api[0].body.state.item, 'GIFT Person B');
+  assert.equal(seen.api[1].body.state.item, 'MAP a city');
+  assert.ok(!/fake|\bjo\b/i.test(allText(seen)), allText(seen));
+});
+
+test('category names: "Not a name" is respected; an ordinary category word the scan does not flag is sent as it is', async () => {
+  fs.writeFileSync(config.privacy.wordsPath, JSON.stringify({ words: [], notNames: ['Alex'], found: [], order: [] }));
+  const seen = mockWorld({ names: ['Alex'], nameFields: [LABEL_FIELD] });
+  await categorizeItems(receipt('SOCKS FOR ALEX'), KID_LABELS, [], [], { businessNames: ['Target'] });
+  assert.equal(seen.api[0].body.state.item, 'SOCKS FOR ALEX');
+  assert.deepEqual((await loadPrivate()).found, []);
+});
+
+test('category names: when the scan is down nothing is sent, so a person named by a category never goes out unscanned', async () => {
+  const seen = mockWorld({ reader: () => new Response('loading', { status: 503 }) });
+  await assert.rejects(categorizeItems(receipt('SOCKS FOR ALEX'), KID_LABELS, [], [], { businessNames: ['Target'] }), (e) => e.name === 'TransientError');
+  assert.equal(seen.api.length, 0);
+});
+
+test('category names: the final check holds back a request where a name flagged in a category name slipped through (kind "found name")', async () => {
+  const logs = [];
+  mock.method(console, 'log', (...a) => logs.push(a.join(' ')));
+  // contrived on purpose: "budget" is in the fixed question text, which no scrubbing touches
+  const seen = mockWorld({ names: ['Budget'], nameFields: [LABEL_FIELD] });
+  const r = receipt('MILK');
+  await categorizeItems(r, [...LABELS, 'Planning / Budget'], [], [], { businessNames: ['Target'] });
+  mock.method(console, 'log', () => {});
+  assert.equal(seen.api.length, 0);
+  assert.match(r.items[0].invalidAnswer, /held back from the hosted decider \(privacy check\): .*\(found name\)/);
+  assert.match(logs.find((l) => /NOT sent/.test(l)), /questions\.category\.instructions \(found name\)/);
 });

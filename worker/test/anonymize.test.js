@@ -348,3 +348,22 @@ test('buildRemoteRequest: the per-receipt question lists every item with its pri
   buildRemoteRequest(input({ whole: true, wholeInstructions: 'q' }), (t, kind) => { seen.push([kind, t]); return t; });
   assert.deepEqual(seen.filter(([k]) => k === 'item').map(([, t]) => t), ['MED-GUM', 'MILK (whole milk)'].map((t) => t.replace('MED-', '')));
 });
+
+test('a short category name the scan flagged ("Kids / Alex" -> Alex) is replaced in a note, a description and an item line, and the leak check stops it; ordinary category words stay', () => {
+  const labels = ['Daily Expenses / Coffee', 'Kids / Alex'];
+  const scrub = makeScrubber(pseudonymEntries(['Alex'], ['alex']));
+  const { body } = buildRemoteRequest({
+    labels, receipt: { date: '2026-10-26', total: 4, items: [{ description: 'SOCCER SOCKS ALEX', amount: 2 }, { description: 'COFFEE BEANS', amount: 2 }] },
+    index: 0, history: [{ date: '2026-10-01', amount: 30, parts: [{ category: 'Kids / Alex', amount: 30, notes: 'soccer cleats for Alex' }] }],
+    itemHistory: [], notes: { 'Kids / Alex': "Alex's school things" }, instructions: 'Pick one.', model: 'm',
+  }, scrub);
+  assert.equal(body.state.item, 'SOCCER SOCKS Person A');
+  assert.deepEqual(body.state.other_items_on_receipt, ['COFFEE BEANS']);
+  assert.deepEqual(body.state.past_purchases_at_this_store[0].filed_as, ['C02 30 (soccer cleats for Person A)']);
+  assert.equal(body.questions.category.criteria.C02, "Person A: Person A's school things");
+  assert.equal(body.questions.category.criteria.C01, 'The "Coffee" budget category (group: Daily Expenses)');
+  assert.deepEqual(findLeaks(body, { labels, words: ['Alex'], found: ['Alex'] }), []);
+  // one that slipped through is caught and called a found name; the ordinary word "Coffee" is no leak
+  const raw = { state: { item: 'COFFEE BEANS', note: 'soccer cleats for Alex' }, criteria: { C01: 'The "Coffee" budget category' } };
+  assert.deepEqual(findLeaks(raw, { labels, words: ['Alex'], found: ['Alex'] }), [{ path: 'state.note', kind: 'found name' }]);
+});

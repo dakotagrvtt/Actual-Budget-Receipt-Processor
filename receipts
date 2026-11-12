@@ -714,7 +714,7 @@ describe_warning() {
 }
 
 # Where the decider runs. Local (the default) changes nothing in .env. The hosted Jev needs an API key (read hidden, written
-# to .env only, never shown or passed on a command line) and gets every request anonymized first (docs/how-it-works.md).
+# to .env only, never shown or passed on a command line) and gets every request anonymized first (docs/cloud.md).
 choose_decider() {
   local was=N
   remote_decider && was=Y

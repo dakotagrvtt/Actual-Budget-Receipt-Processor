@@ -1,7 +1,9 @@
 // The remote decider: TypeSafe's hosted Jev (POST /v1/systemone, the same interface as the local llama.cpp server), reached
 // only with anonymized requests. Order for each receipt:
 //   1. build every request with the plain texts, only to collect what would be sent (anonymize.js)
-//   2. layer 1: the reader scans those texts for private people's names and for places (name-scan.js); new ones are remembered
+//   2. layer 1: the reader scans those texts for private people's names and for places (name-scan.js), and every category
+//      name in the budget too ("Kids / Alex"), so a short name or group name that names someone is hidden wherever it is
+//      written alone; new ones are remembered
 //   3. layer 2: your private-words list and those names become pseudonyms (Person A, ...)
 //   4. final leak check on each finished request; a request that fails it is not sent (the item is left unsure, and
 //      the log and the review reason say which field and which kind of leak, never the value)
@@ -226,6 +228,11 @@ export async function remoteDecide(args, check) {
     return re && texts.some((t) => new RegExp(re).test(t.text));
   });
   for (const n of used) texts.push({ kind: 'store', text: storeClean(n) });
+  // Every category name, whole: a full label only ever goes out as a code, but its short name and group name go out in the
+  // category's description and may be written alone in a note or an item line ("soccer cleats for Alex", "Kids / Alex").
+  // A name or place the scan flags in a category name is remembered and hidden everywhere like any other; an ordinary
+  // category word ("Groceries") is not flagged and goes out as it is. Cached per name, so a budget costs one scan.
+  for (const l of new Set([...labels, ...(args.allLabels ?? [])])) if (typeof l === 'string') texts.push({ kind: 'label', text: l });
   const p0 = await loadPrivate();
   const scan = await scanTexts(texts, receipt.merchant, effectiveWords(p0));
   const found = scan.names;

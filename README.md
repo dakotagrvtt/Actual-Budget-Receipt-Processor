@@ -2,7 +2,7 @@
 
 Processes receipt photos uploaded to Nextcloud with a local vision model (llama.cpp), sorts each item into your Actual Budget categories with a local decision model, and splits the matching transaction in Actual when it is confident. Anything it is unsure about goes to a review folder.
 
-## Receipt pipeline: photo of a receipt → categorized in Actual Budget
+## Actual Budget Receipt Processor
 
 Take a photo of a receipt and upload it. A few minutes later the matching bank charge in
 [Actual Budget](https://actualbudget.org) (a free budgeting app you run yourself) is filed under the right budget
@@ -10,53 +10,71 @@ categories, item by item. If the receipt covers several categories (groceries an
 is split into one part per category.
 
 **By default everything runs on your own computer.** Your receipt photos and purchases are sent nowhere except to your
-own Actual and Nextcloud servers. Two optional features send data to a cloud service. Both are off unless you switch
-them on, and both are explained under [Privacy](#privacy).
+own Actual and Nextcloud servers. Two optional cloud features are off unless you switch them on: see
+[Privacy](#privacy).
+
+![The Inbox on a computer: a receipt photo next to its items, each with the category the decider picked, one item marked "Not sure", and the split the charge gets in Actual](docs/images/inbox-desktop.png)
+
+<table>
+<tr>
+<td width="30%" valign="top"><img src="docs/images/receipt-phone-dark.png" alt="The same receipt on a phone, in dark mode"></td>
+<td valign="top"><img src="docs/images/settings.png" alt="Settings: everyday options, matching and review, categories, category rules, learned corrections, connections, appearance and advanced"></td>
+</tr>
+<tr>
+<td valign="top">On a phone, with dark mode</td>
+<td valign="top">Settings: categories, rules and what it learned from you, all in the web app</td>
+</tr>
+</table>
+
+All screenshots use made-up receipts.
 
 **On this page:**
 [How it works](#how-it-works) ·
-[What you need](#what-you-need) ·
 [Install](#install) ·
-[Your first receipt](#your-first-receipt) ·
 [Everyday use](#everyday-use) ·
 [Teaching it your household](#teaching-it-your-household) ·
 [Commands](#commands) ·
-[Settings that matter](#settings-that-matter) ·
+[Settings](#settings) ·
 [Privacy](#privacy) ·
-[Troubleshooting](#troubleshooting) ·
-[More reading](#more-reading)
+[Troubleshooting](#troubleshooting)
 
 ## How it works
 
-1. **You upload** a receipt photo or PDF to the `Receipts/Inbox` folder in [Nextcloud](https://nextcloud.com) (a
-   self-hosted file service). The Nextcloud phone app can do this automatically.
-2. **The reader reads it.** A vision AI model running on your computer (the *reader*) reads the store, date, total and
-   every line item.
-3. **It finds the bank charge.** Your bank sync has already put the charge into Actual. The pipeline finds it by
-   amount, date and store name. It never creates transactions by itself; for a cash purchase (no bank charge) you can press **Create in Actual** on the receipt's page, after a preview.
-4. **The decider picks categories.** A second AI model (the *decider*) chooses a budget category for each item. It
-   learns from how you filed past purchases at the same store, from your category descriptions and from your keywords.
-5. **It files the result.** The charge is recategorized, or split by category, and the receipt moves to
-   `Receipts/Processed`.
-6. **Doubtful ones wait for you.** Anything it isn't sure about goes to `Receipts/Needs review` with a note saying
-   why. Charges it changed but wants you to check are tagged `#review` in Actual, so you can search for them.
+```mermaid
+flowchart TD
+  you(["You add a photo or PDF"]) --> inbox[("Nextcloud<br/>Receipts/Inbox")]
+  inbox --> read
 
-It starts in **dry run** mode: it shows what it would do and changes nothing, until you switch it to **live**.
+  subgraph machine["Your machine: the worker and two local models"]
+    read["1. Read<br/>vision model reads store, date, items, tax"] --> match["2. Match<br/>find the bank charge it belongs to"]
+    match -->|"found"| decide["3. Decide<br/>a category for each item"]
+    memory[("Your rules and<br/>learned corrections")] --> decide
+    decide --> write["4. Write<br/>re-check the charge, then split it"]
+    panel["Web app<br/>Inbox, Archive, Settings"]
+  end
 
-The details (matching rules, splitting, tax, review rules) are in [How it works](docs/how-it-works.md).
+  write --> actual[("Actual Budget")]
+  actual -.->|"charges, categories,<br/>past purchases"| match
+  match -->|"cash or no clear match"| panel
+  write -->|"items it wasn't sure of,<br/>tagged #review"| panel
+  panel -->|"your fixes"| write
+  panel -.->|"teach it"| memory
+```
 
-## What you need
+It never creates bank transactions on its own: your bank sync puts the charge in Actual, and the pipeline only files it.
+It starts in **dry run** (shows what it would do, changes nothing) until you switch it to **live**.
 
-- A Linux computer with [Docker](https://docs.docker.com/engine/install/) (a tool that runs programs in tidy
-  containers; setup checks it for you).
-- A graphics card (AMD, Intel or NVIDIA) with about 9 GB of free graphics memory. With less than 10 GB, setup picks
-  smaller settings that need about 8 GB. With no graphics card it runs on the processor: it works, only slowly, which is
-  fine because receipts aren't urgent.
-- About 10 GB of disk space for the two AI models (they download once, about 8 GB).
-- An Actual Budget server with your bank transactions in it (bank sync or imported files).
-- A Nextcloud server to upload receipts to.
+One short page per step: [How it works](docs/how-it-works.md).
 
 ## Install
+
+You need:
+
+- a Linux computer with [Docker](https://docs.docker.com/engine/install/);
+- a graphics card (AMD, Intel or NVIDIA) with about 9 GB free (setup picks smaller settings for 8 GB; with no card it
+  runs on the processor, just slowly) and about 10 GB of disk for the two models;
+- an Actual Budget server with your bank transactions in it, and a [Nextcloud](https://nextcloud.com) server to upload
+  receipts to.
 
 ```
 git clone https://github.com/dakotagrvtt/Actual-Budget-Receipt-Processor.git receipt-pipeline
@@ -64,245 +82,106 @@ cd receipt-pipeline
 ./receipts setup
 ```
 
-Setup asks before anything big, and you can run it again at any time (it only asks for what's missing).
-`./receipts setup --yes` takes the default answer to every question. It:
+Setup checks Docker, asks for your Actual and Nextcloud details, picks settings for your graphics card, downloads the
+models, offers to create `Receipts/Inbox`, tests the connections and drafts a description for each budget category. It asks
+before anything big, and you can run it again any time. At the end it prints the link to your **receipt app**.
 
-1. checks Docker, and offers to start it at boot so the pipeline comes back after a reboot;
-2. asks for your Actual and Nextcloud details, and says where to find each one;
-3. detects your graphics card (or that there is none) and picks matching settings;
-4. downloads the models;
-5. offers to create the `Receipts/Inbox` folder in Nextcloud;
-6. starts everything, tests the connections, and writes a first description for each of your budget categories from
-   your past transactions;
-7. prints the link to your **receipt app** (the web page where you review receipts and change settings).
-
-## Your first receipt
-
-1. Upload a receipt for a purchase that is already in Actual to `Receipts/Inbox`.
-2. Open the app and go to **Activity and test mode** (at the bottom of the Inbox list), then press **Check now**. It shows what it *would* do. Nothing is changed yet. (The
-   details are in `./receipts logs`.)
-3. When the results look right, press **Go live** (also under **Activity and test mode**). Receipts it already looked at in dry run are then processed for real.
+**Your first receipt:** upload one for a purchase already in Actual, open the app, go to **Activity and test mode** (at
+the bottom of the Inbox list) and press **Check now**. When the results look right, press **Go live**.
 
 ## Everyday use
 
-Upload receipts. That's all. The pipeline checks the inbox every 5 minutes and keeps running after a reboot. The models
-unload themselves after 5 idle minutes, so the graphics card is free between receipts.
+Upload receipts to `Receipts/Inbox` (the Nextcloud phone app can do it automatically) or with **+ Add receipt** in the
+app. The pipeline checks every 5 minutes, and the models unload after 5 idle minutes to free the graphics card.
 
-The **receipt app** is your control panel. Its link contains a secret key, so open it from the link setup printed, or
-run `./receipts trigger-url` to print it again (`http://localhost:8095` without the key says "forbidden"). Bookmark it,
-or paste it as a link into an Actual note. It has three tabs at the top (a bottom tab bar on phones): **Inbox** (with a badge counting the ones to review), **Archive** and **Settings**, plus **+ Add receipt**. From it you can:
+The **receipt app** is the control panel. Its link holds a secret key (`./receipts trigger-url` prints it again), so keep
+it private and on your own network. It has three tabs:
 
-- open receipts from the **Inbox** list, grouped into **Review**, **Waiting** and **Filed** (Filed starts collapsed). Desktop shows the list beside the receipt and opens on "Pick a receipt"; phones start on the list. Each receipt has one status banner at the top, with its actions. **Receipt details** holds the full reading and diagnostics, and a **More** menu on the receipt holds the less common actions. A waiting receipt shows only its banner, **Next receipt** and the photo. **Next receipt** stays within the group you opened the receipt from;
-- search the list, which filters all three groups;
-- on an unapplied receipt, open **Find a charge** to correct the merchant, purchase date, total or payment method. Search for an existing charge without changing Actual, then choose it and **Save changes**. You can also keep checking automatically with your corrections. Choosing a charge already split or reconciled keeps its contents in Actual and lets you archive the receipt;
-- check the inbox right now, or **upload receipt photos and PDFs** with **+ Add receipt** (same as putting them in the Nextcloud Inbox);
-- open **Activity and test mode** (a link at the bottom of the Inbox list) for the recent-results table, the dry run / live switch (it takes effect at the next check), **Go live** and **Archive all done receipts**;
-- under **Settings**, edit your **Categories** (descriptions and keywords, with an **Undo** button after a removal), **Category rules** and **Learned corrections**, and exclude category groups or single categories that receipts should never go to;
-- change settings from the **Settings** overview, which links to a page per section: Everyday, Matching and review, Categories, Category rules, Learned corrections, Connections, Appearance and Advanced (plus Privacy with a hosted decider). Each section saves on its own and returns to the same section; **Done** returns to where you came from. **Help and options** explains a setting or restores its setup value;
-- choose how the app looks under **Settings → Appearance**: Theme (System, Light or Dark) and Accent (Blue, Teal, Violet, Rose or Graphite). These are stored per device, in the browser, not on the server;
-- press **Try again** on a live receipt that went to review without changing anything in Actual;
-- press **Read again** to read the photo once more with today's reader. The request does not change Actual. For a purchase already filed, review the new reading before saving;
-- edit any item's category or amount. The split preview updates as you type, including tax. **Save changes** updates the existing charge; **Looks right** is shown instead when nothing was edited, and confirms a review without rewriting its split: it only removes the `#review` tag, and has no Undo (the receipt shows as Filed right away). For a cash purchase, **Create in [account]** adds the transaction after a preview, a duplicate check and a separate confirmation. Corrections become lessons, and after **Save changes** or a cash Create, **Undo** is offered on the receipt for the rest of the 15 minutes, even after you leave and come back. Nothing is written in a dry run.
+- **Inbox**: receipts grouped into **Review**, **Waiting** and **Filed**. Fix an item's category or amount, pick a
+  different charge with **Find a charge**, or create a cash purchase. **Undo** works for 15 minutes.
+- **Archive**: receipts you are done with, searchable, with **Restore**.
+- **Settings**: categories, keywords, what it learned, matching, connections and appearance. Changes apply at the next
+  check, without a restart.
 
-Choosing an existing charge starts the receipt items in that charge's category, while keeping saved item corrections. For a purchase that belongs in one category, **Set all items** changes the items and added discounts together. You can still adjust individual rows before saving. Existing split or reconciled charges keep their contents in Actual.
+Anything it isn't sure of waits in **Review** with the reason, and charges it changed but wants you to check are tagged
+`#review` in Actual.
 
-Unsaved receipt edits stay in this tab while you move between receipts or open Settings (**Done** brings you back to them). They are lost when the tab reloads or closes, so the browser warns before leaving. Without JavaScript, the same server forms use an explicit Preview step.
-
-The app uses plain HTTP and anyone with the link can use it, so keep it on your own network and keep the link
-private.
-
-**Archiving.** When you agree a receipt is right, press **Archive receipt** on its page (or **Archive all done
-receipts** under **Activity and test mode**). Its photo and summary move to `Receipts/Archive/<year-month>`, the photo is saved again as
-a smaller JPEG (turn that off with `ARCHIVE_SHRINK_PHOTOS`), and the receipt moves to the **Archive** tab, a two-pane
-page where you can search, sort, open it and **Restore** it (Restore opens the receipt again in its group). You can archive a single
-receipt right after saving it; that ends the Undo of that save ("Undo for the last save is no longer available."). **Archive all** and
-automatic archiving skip receipts still inside the 15-minute Undo window. A receipt confirmed with **Looks right** has no Undo, so it can be archived
-at once. A receipt marked "check it in Actual" can be archived one at a time: that first removes its `#review` tag. Set `ARCHIVE_AFTER_DAYS` to archive Done receipts by themselves after that many days (off by
-default). Nothing is archived in a dry run.
-
-For a wrong or unmatched receipt in Needs review, choose **Archive receipt** on its page. This moves the receipt out of Review without changing any transaction or notes in Actual. You can restore it from Archive later.
-
-Interrupted file moves and receipt-summary saves retry automatically, including after a restart. Stalled Nextcloud requests stop after 30 seconds. An interrupted cash creation is looked up by its original transaction ID: an existing purchase is recovered, and an absent one requires an explicit retry after Preview. Later edits in Actual are kept, and stale previews or Undo requests are refused. These protections require no extra settings.
-
-After setup, the app manages the Nextcloud receipt folders. Upload through the app or into Inbox; use the app for corrections, retries and archiving. Normal receipts continue automatically without any of these exception actions.
-
-**Receipts that need review** keep their reason in a `.json` file next to them in `Receipts/Needs review`. Whatever the
-pipeline did apply is tagged `#review` in Actual. Unsure items are put in the store's usual category, or in an
-"Uncategorized" part whose note gives the decider's best guess. Fix those in Actual like any other transaction.
+More: [The web app](docs/web-app.md) and [Reviewing and fixing a receipt](docs/review.md).
 
 ## Teaching it your household
 
-It gets better the more it knows about who buys what.
+- **Category descriptions:** a sentence per category ("the kids' clothes, toys and diapers"). Setup drafts them; edit
+  them under **Settings › Categories**.
+- **Keywords:** for what a description can't say. Add them in Settings, or type `#always Pampers` (a rule) or
+  `#usually Pampers` (a strong hint) in the note of a split part in Actual.
+- **Your fixes:** when you change a category it filed, it notices and remembers, and after a couple of the same fix it
+  adds a keyword. See and **Forget** them under **Learned corrections**.
 
-- **Category descriptions.** One or two sentences per category about what belongs in it ("the kids' clothes, toys and
-  diapers"). Setup writes a first draft from your past transactions. Edit them under **Settings → Categories** in your own words.
-- **Keywords.** For things a description can't capture: a brand that always goes to one person, a store where
-  everything is for the kids. Add them under **Settings → Categories**, or right in Actual:
-  - type `#always Pampers` in the note of a split part, and from then on Pampers always go to that category;
-  - `#usually` does the same, but as a strong hint instead of a rule.
-- **Your own splits.** When you split a charge by hand, a word or two in each part's note ("diapers", "DVDs") teaches
-  it what goes where.
-- **Your fixes.** When the pipeline files a charge and you later change a category in Actual, it notices (every few
-  hours) and remembers. After you make the same fix a couple of times at one store, it adds a keyword for it. The
-  **Learned corrections** page under Settings shows what it learned, and **Forget** drops anything wrong. Learning only runs in
-  live mode. To switch it off, set `LEARNING=off` in `.env`.
-
-More detail: [Keywords](docs/how-it-works.md#keywords) and
-[Learning from your corrections](docs/how-it-works.md#learning-from-your-corrections).
+More: [Keywords](docs/categories.md#keywords) and [Learning from your corrections](docs/learning.md).
 
 ## Commands
 
-You don't need these day to day. `./receipts help` lists them.
+Day to day you don't need these. `./receipts help` lists them all.
 
 | Command | What it does |
 |---|---|
-| `./receipts setup` | First-time setup; run it again to fill in anything missing |
-| `./receipts download-models` | Download the models (safe to re-run; also needed after changing `DECIDER_MODEL` or `READER_LOCAL_MODEL`) |
-| `./receipts start` / `stop` | Start everything / stop it and free the graphics card |
-| `./receipts restart` | Restart the worker so it picks up changes to `.env` |
-| `./receipts update` | Rebuild the worker after a code update |
-| `./receipts status` | Mode, whether everything is running, any alert, the last log lines |
-| `./receipts logs` | Follow the log as receipts are processed (Ctrl-C stops watching; it keeps running) |
-| `./receipts check` | Test the connections to Nextcloud, Actual and the models (changes nothing) |
-| `./receipts run-now` | Check the inbox now, like the button in the app |
-| `./receipts mode` | Show the mode; `mode dry` or `mode live` switches it, like the app's switch (`live` asks you to confirm) |
-| `./receipts trigger-url` | Print the app link and the webhook address again |
-| `./receipts exclude` | Pick the category groups (and single categories) receipts never go to, such as bills and savings; restarts the worker |
-| `./receipts describe` | Write descriptions for categories that have none (`--refresh` rewrites the auto-written ones; with a cloud reader it asks first) |
-| `./receipts keyword …` | Add, remove, list and test keywords, e.g. `keyword add "Pampers" Kids --always` |
-| `./receipts replay …` | Re-run receipts you have already filed and compare, changing nothing |
-| `./receipts item-test …` | Test the decider on your own hand-made splits, changing nothing |
+| `./receipts setup` | First-time setup; run again to fill in anything missing |
+| `./receipts start` / `stop` / `restart` | Start, stop (frees the graphics card), or restart after editing `.env` |
+| `./receipts update` | Rebuild after a code update |
+| `./receipts status` / `logs` | Mode, health and any alert / follow the log |
+| `./receipts check` | Test every connection (changes nothing) |
+| `./receipts mode dry` / `mode live` | Switch mode, like the app's switch |
+| `./receipts trigger-url` | Print the app link again |
+| `./receipts download-models` | Fetch the models (also after changing a model setting) |
+| `./receipts exclude` | Pick category groups receipts never go to, such as bills and savings |
+| `./receipts keyword …` | Add, remove, list and test keywords |
+| `./receipts replay …` | Re-run filed receipts and compare, changing nothing |
 
-## Settings that matter
+## Settings
 
-Every setting lives in `.env`. [`.env.example`](.env.example) lists all of them, each with a short comment and its
-default. Setup fills in the required ones. Run `./receipts restart` after editing `.env`. Many of them (the connections to
-Actual and Nextcloud, matching, categorizing, the check interval, holidays, keywords and learning) can also be changed on
-the app's **Settings** pages (everyday settings first, tuning ones under **Advanced**): **Help and options** shows where each value comes from (`.env`, this page or the default), a
-**Use the .env value** button undoes an override, and a change applies at the start of the next check, without a
-restart. A value saved there is kept in `data/web-settings.json` and wins over `.env`; `./receipts status` says so when
-that file exists. Models, GPU, providers and API keys, the app's own key and every file path stay in `.env`. The
-ones you are most likely to want:
+Every setting is in `.env`; [`.env.example`](.env.example) lists them all with their tested defaults. Many can also be
+changed on the app's **Settings** pages, which win over `.env`. After editing `.env`, run `./receipts restart`. The ones
+you are most likely to want:
 
 | Setting | What it does |
 |---|---|
-| `MATCH_TOLERANCE_PERCENT=25` | Allows restaurant tips (the charge is higher than the receipt) |
+| `MATCH_TOLERANCE_PERCENT=25` | Allows restaurant tips (charge higher than the receipt) |
 | `MATCH_ACCOUNTS` | Only look for charges in these Actual accounts |
-| `EXCLUDE_CATEGORY_GROUPS` | Category groups receipts never go to, such as bills and savings (`./receipts exclude` sets it; single categories go in `EXCLUDE_CATEGORIES`). The app hides them too |
-| `DECIDER_MODEL` | The decider model. Setup picks d3-flash 9B when your graphics card has 14 GB or more, else d1-2B. Run `./receipts download-models` after changing it |
-| `READER_LOCAL_MODEL` | A different reader model (see below) |
-| `LEARNING=off` | Turns off learning from your corrections |
-| `MODEL_SLEEP_SECONDS=-1` | Keeps the models loaded (use this if another app shares the graphics card) |
+| `EXCLUDE_CATEGORY_GROUPS` | Category groups receipts never go to (`./receipts exclude` sets it) |
+| `DECIDER_MODEL` / `READER_LOCAL_MODEL` | Swap a model ([reader](docs/reading.md#the-local-reader-model)); then `./receipts download-models` |
+| `LEARNING=off` | Stop learning from your corrections |
+| `MODEL_SLEEP_SECONDS=-1` | Keep the models loaded (if another app shares the graphics card) |
 
-The values in `.env.example` are the ones that tested best, so you rarely need to change them. What each one did in
-testing is in [docs/research.md](docs/research.md#11-setting-by-setting). To try a value on your own receipts, run
-`./receipts replay` (it changes nothing).
-
-Short on graphics memory? Setup can run the decider on a hosted service instead. That sends anonymized text out, so
-read [Privacy](#privacy) first.
-
-### Trying a different reader model
-
-The reader is the vision model that reads receipt photos. To try another one, put one line in `.env`:
-
-```
-READER_LOCAL_MODEL=bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF:Q4_K_M
-```
-
-That is a Hugging Face repo and a quant (the compression level), written like `DECIDER_MODEL`. Then:
-
-1. `./receipts download-models` fetches the model and its image projector. It stops with a clear message if the repo
-   has none, because a model without one can't read images. `READER_LOCAL_MMPROJ` picks a particular projector by file
-   name or quant.
-2. `./receipts restart`. `./receipts status` shows the reader model in use.
-3. `./receipts replay` on your own receipts, and compare with the default before trusting it. A bigger model needs more
-   graphics memory, and a model that is better on paper can read your receipts worse.
-
-To go back, delete the `READER_LOCAL_MODEL` line (and `READER_LOCAL_MMPROJ`) and run `./receipts restart`. The default
-files stay in `models/`, so nothing is downloaded again.
+To try a value on your own receipts first, run `./receipts replay`. How each default was chosen:
+[Research](docs/research.md).
 
 ## Privacy
 
-**Default: everything is local.** With the settings from `./receipts setup` (`READER_PROVIDER=local`,
-`DECIDER_PROVIDER=local`), the photo, the reading, the categorizing and everything you taught it stay on your computer
-in the `data/` folder. The only outside connections are to your own Actual and Nextcloud servers, and the one-time model
-downloads. `./receipts status` prints a line for the reader and the decider only when one of them is hosted.
+**Default: everything is local.** The photo, the reading, the categorizing and what you taught it stay in `data/` on
+your computer. The only outside connections are your own Actual and Nextcloud servers and the one-time model downloads.
 
-There are two optional cloud features. Each is off unless you choose it in `./receipts setup` or in `.env`.
+Two optional cloud features, each off unless you choose it in setup or `.env`:
 
 | | What leaves your machine | Goes to | Keep it local with |
 |---|---|---|---|
-| Cloud reader | The whole receipt photo | The provider you choose (OpenAI or OpenRouter) | `READER_PROVIDER=local` (the default) |
-| Hosted decider | Anonymized text about each item (no photos) | TypeSafe | `DECIDER_PROVIDER=local` (the default) |
+| Cloud reader | The whole receipt photo (location data removed) | OpenAI or OpenRouter, with your key | `READER_PROVIDER=local` (default) |
+| Hosted decider | Anonymized item text (names and places hidden, categories as codes), never the photo | TypeSafe | `DECIDER_PROVIDER=local` (default) |
 
-To go back after switching one on, set it to `local` in `.env` and run `./receipts restart`. That also starts the local
-services again.
-
-### Cloud reader (optional): your receipt photos leave your machine
-
-Each photo is sent to a cloud vision model, using your own OpenAI or OpenRouter API key (`READER_PROVIDER=remote`).
-Think about this first:
-
-- **The whole photo is sent.** It shows the store and its address (where you shop), the date and time, everything you
-  bought, the prices, the last digits of your card, member or loyalty numbers, sometimes your name or a cashier's, and
-  barcodes. Location data (EXIF) is removed from the photo before it is sent. The anonymizing used for the hosted
-  decider does **not** apply to photos. A cloud reader sees everything on the receipt.
-- **The provider may keep requests for a while** (for example to watch for abuse), and policies differ and change.
-  Check the provider's current policy. With OpenRouter the request goes on to a third-party model provider whose policy
-  applies. OpenRouter has privacy settings that limit providers that log or train on data. Check them.
-- **It costs money per photo**, and it has not been tested on this pipeline's receipts. Before switching, run
-  `./receipts replay` with the cloud reader and compare it with the local one. (Replay also sends the photos.)
-- **Category descriptions are not written automatically.** Writing them sends category names, store names, amounts and
-  your item notes. `./receipts describe` lists what it would send and asks first.
-- **With the hosted decider too:** the scan that finds names to hide runs through the reader. So your raw item lines,
-  store names and category notes would go to the cloud reader's provider before anonymizing. The worker refuses to start
-  with both hosted unless you set `CLOUD_NAME_SCAN=true` to accept that.
-
-With a cloud reader, `./receipts start` does not start the local reader, which frees about 5.6 GB of graphics memory.
-Settings for the local reader (`LLM_THINKING`, `LLM_NAME`, the sampling settings) do not apply. Details and error
-handling: [Cloud reader](docs/how-it-works.md#cloud-reader-optional).
-
-### Hosted decider (optional): anonymized text leaves your machine
-
-If your graphics card is short on memory, the decider can run on TypeSafe's hosted Jev model instead
-(`DECIDER_PROVIDER=remote`; setup asks). You need a TypeSafe API key. Your photos stay on your machine (unless you also
-use the cloud reader). What is sent, always anonymized first (there is no switch to turn that off):
-
-- the item lines and amounts, and the other items on the receipt;
-- the store name as it appears in Actual, and your past purchases, notes and category descriptions for that store, with
-  category names replaced by codes (`C01`, `C02`…);
-- dates as "12 days before this purchase";
-- people's names as "Person A", "Person B"…, and places as "a city" or "a street".
-
-**Never sent:** the photo, card digits, the payment method, addresses, the printed date, and calendar event names.
-
-Names are found from your own lists (`PRIVATE_WORDS`, `PRIVATE_PLACES`, editable under **Settings → Privacy**)
-and by a scan from the reader. No automatic scan is perfect, so before switching, run
-`./receipts replay --preview-remote <folder>` to see exactly what would be sent. It sends nothing to the hosted decider.
-(With a cloud reader the photos still go to the reader's provider.) More detail:
-[Hosted decider](docs/how-it-works.md#hosted-decider-optional).
+A cloud reader sees everything on the receipt, including card digits and loyalty numbers. For the hosted decider, run
+`./receipts replay --preview-remote <folder>` to see exactly what would be sent before you switch. Full details:
+[Cloud options](docs/cloud.md).
 
 ## Troubleshooting
 
-- **Something isn't working:** run `./receipts check`. It tests every connection and says what's wrong.
-  `./receipts status` shows a **WORKER ALERT** line when a setup problem (such as a refused API key) has paused the
-  checks. Receipts wait in the inbox until you fix it and run `./receipts restart`.
-- **Out of graphics memory:** stop other apps using the card, or put `DECIDER_GPU_LAYERS=0` in `.env` and run
-  `./receipts restart`. That moves the decider to the processor and frees about 2.5 GB. If another app shares the card,
-  also set `MODEL_SLEEP_SECONDS=-1` so the models never give their memory back.
-- **A receipt went to review:** its `.json` says why. If nothing was changed in Actual, fix the cause (a keyword, a
-  payee alias) and press **Try again** on the receipt's page. If a charge was matched you can instead fix the item categories on the receipt's page and press **Save changes**. Otherwise use **Find a charge** or fix the charge in Actual by hand. For a badly read
-  photo, upload a clearer one.
-- **The store name never matches the bank's name:** copy `payee-aliases.example.json` to `data/payee-aliases.json` and
-  list the different spellings of each store together.
-- **The app says "forbidden":** the link needs its key. Run `./receipts trigger-url` and use that link.
-
-## More reading
-
-- [How it works](docs/how-it-works.md): matching, splitting, tax, review rules, the app, keywords, learning,
-  the webhook, replay tests, and the cloud reader and hosted decider in detail.
-- [Research](docs/research.md): how the models and defaults were chosen, with test results and hardware notes.
-- [`.env.example`](.env.example): every setting with its default.
+- **Something isn't working:** `./receipts check` tests every connection and says what's wrong. `./receipts status`
+  shows a **WORKER ALERT** when a setup problem has paused the checks; fix it and run `./receipts restart`.
+- **Out of graphics memory:** put `DECIDER_GPU_LAYERS=0` in `.env` (moves the decider to the processor) and restart.
+  See [Running it](docs/running.md).
+- **A receipt went to review:** its page says why. Fix the cause and press **Try again**, or fix the items and **Save
+  changes**.
+- **The store name never matches the bank's:** list the spellings in `data/payee-aliases.json` (copy
+  `payee-aliases.example.json`). See [Matching tips](docs/matching.md#tips).
+- **The app says "forbidden":** the link needs its key. Run `./receipts trigger-url`.
 
 ## License
 

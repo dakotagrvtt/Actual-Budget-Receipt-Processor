@@ -1866,7 +1866,7 @@ test('wording: the how-it-works help and the docs mention amounts and added line
   const { html } = await fetchPage(null);
   assert.match(html, /an amount box and a category menu/);
   assert.match(html, /Add a line/);
-  const docs = fs.readFileSync(new URL('../../docs/how-it-works.md', import.meta.url), 'utf8');
+  const docs = fs.readFileSync(new URL('../../docs/review.md', import.meta.url), 'utf8');
   assert.match(docs, /Add a line/);
   assert.match(docs, /pageFix\.amounts/);
 });

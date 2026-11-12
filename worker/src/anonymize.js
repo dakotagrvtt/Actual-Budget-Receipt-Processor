@@ -4,7 +4,9 @@
 //   - every category label replaced by a code (C01, C02, ...) that only this machine can turn back into a label
 //     (also a full label written inside a note or a description),
 //   - every date turned into "N days before this purchase" (the purchase date itself is not sent),
-//   - every name from the private-words list or the reader's name scan replaced by a pseudonym (Person A, Person B, ...),
+//   - every name from the private-words list or the reader's name scan replaced by a pseudonym (Person A, Person B, ...);
+//     the scan also reads every category name, so a person named by a category ("Kids / Alex") is hidden wherever the
+//     short name is written alone; ordinary category words ("Groceries") stay as they are,
 //   - every place that locates the household (city, state, street, neighbourhood; from your list or the reader's scan)
 //     replaced by "a city", "a state", "a street" or "a place"; ZIP and postal codes dropped,
 //   - all text normalized (NFKC) first, so "José" typed two ways is one word.

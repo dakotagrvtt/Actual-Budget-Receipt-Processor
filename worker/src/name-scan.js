@@ -19,7 +19,8 @@ import { withLock, writeJsonAtomic } from './file-lock.js';
 const MAX_CACHE_ENTRIES = 5000;
 const BATCH_CHARS = 6000; // texts per reader call: this many characters at most
 const BATCH_ITEMS = 12; // a small batch keeps the 4B reader accurate (81 texts in one call went wrong)
-// Bump when the instructions or the fields below change: cached answers from an older prompt are not trusted.
+// Bump when the instructions or the fields below change: cached answers from an older prompt are not trusted. (A new
+// field kind needs no bump: the kind is part of the cache key, so it has no cached answers yet.)
 export const PROMPT_VERSION = 6; // 3: places as well as people; 4: fallback place words kept to their own text; 5: batches of 12, item lines need evidence, name shape checks; 6: brand example in the prompt
 
 // An item line is product text, so a name the reader finds in one is only believed when the line has one of these
@@ -45,6 +46,9 @@ const FIELD = {
   category: () => 'description of a budget category',
   keyword: () => 'keyword',
   store: () => 'store or payee name',
+  // A category's own name ("Kids / Alex"): scanned so a person or place it names is hidden wherever the short name or
+  // group name is written alone (a note, a description, an item line). The full label is never sent (a code instead).
+  label: () => 'name of a budget category, written "group / category"',
 };
 /** Kinds that are free text worth scanning. Public holiday names are not (see anonymize.js). */
 const SCANNED_KINDS = Object.keys(FIELD);
