@@ -3,7 +3,7 @@
 // decided on the records as they are now, not as the page showed them. Changes go to state.json with patchEntry.
 // deps (tests): nc (nextcloud stand-in), actual (for clearing #review), lockWaitMs.
 import path from 'node:path/posix';
-import { config, log } from './config.js';
+import { config, filesPlace, log } from './config.js';
 import { PanelError } from './panel-actions.js';
 import { BusyError, exclusive } from './session-lock.js';
 import { loadState, patchEntry, parseStateKey } from './state.js';
@@ -54,7 +54,7 @@ const store = (id, was, next) => patchEntry(id, (e) => {
 });
 
 /** What the notice says about how the photo was stored. */
-const how = (e) => (e.archived.noSummary ? ' The photo moved, but its summary could not be copied; the old summary is still beside the old place.' : '') + (e.archived.fileMissing ? ' The photo was already gone from Nextcloud; only the summary was filed.' : e.archived.shrunk ? ` The photo was shrunk from ${kb(e.archived.shrunk.before)} to ${kb(e.archived.shrunk.after)}.` : '');
+const how = (e) => (e.archived.noSummary ? ' The photo moved, but its summary could not be copied; the old summary is still beside the old place.' : '') + (e.archived.fileMissing ? ` The photo was already gone from ${filesPlace()}; only the summary was filed.` : e.archived.shrunk ? ` The photo was shrunk from ${kb(e.archived.shrunk.before)} to ${kb(e.archived.shrunk.after)}.` : '');
 const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 /**
@@ -113,7 +113,7 @@ export async function archiveOne(form, out, deps = {}) {
       slim = await archiveReceipt(entry, { key: id, dismiss, ...(dismiss ? { reason: 'dismissed without changing Actual' } : keep ? { reason: 'kept as it is in Actual' } : verdict.reason ? { reason: verdict.reason } : {}), ...deps });
     } catch (err) {
       log(`archive: ${nameOf(id)}: ${err.message}`);
-      throw new PanelError(`${cleared ? 'The #review tag was removed in Actual, but the receipt could not be archived (it stays where it is now)' : 'Not archived. The photo was not moved'}. Nextcloud said: ${err.message}${cleared ? ` ${clearNote}` : ''}`);
+      throw new PanelError(`${cleared ? 'The #review tag was removed in Actual, but the receipt could not be archived (it stays where it is now)' : 'Not archived. The photo was not moved'}. ${filesPlace(true)} said: ${err.message}${cleared ? ` ${clearNote}` : ''}`);
     }
     await store(id, entry, slim);
     log(`archive: ${nameOf(id)} archived as ${slim.filedAs}`);

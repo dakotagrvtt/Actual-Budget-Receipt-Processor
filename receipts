@@ -12,8 +12,11 @@ cd "$(dirname "$(readlink -f "$0")")"
 SERVICES=(llm decider-gguf worker)
 REMOTE_OVERLAY=compose.remote-decider.yaml
 READER_OVERLAY=compose.remote-reader.yaml # must come after REMOTE_OVERLAY in COMPOSE_FILE (see compose_reader_last)
+FILES_OVERLAY=compose.local-files.yaml     # STORAGE=local: mounts RECEIPTS_DIR into the worker
+DEFAULT_RECEIPTS_DIR=./receipt-files
+IMAGE_UID=1000 # compose fallback; setup fills RECEIPTS_UID and RECEIPTS_GID in both storage modes
 # One-off runs (replay, check, describe, item-test, keyword) use their own budget copy, so they never share the worker's.
-ONE_OFF=(docker compose run --rm --no-deps -e ACTUAL_DATA_DIR=/data/actual-cache-tools worker)
+ONE_OFF=(worker_one_off --rm --no-deps -e ACTUAL_DATA_DIR=/data/actual-cache-tools worker)
 
 # The default models. The reader is a vision model, so it also needs a multimodal projector (mmproj) file.
 # The default reader is pinned to one Hugging Face snapshot: a fresh install downloads exactly these files, and
@@ -311,8 +314,8 @@ wait_for() {
 # compose_without FILE LIST: the ':'-separated COMPOSE_FILE LIST without FILE.
 compose_without() { local s=":$2:"; s="${s//:$1:/:}"; s="${s#:}"; s="${s%:}"; echo "$s"; }
 
-# base_compose LIST: COMPOSE_FILE LIST without the hosted-decider and cloud-reader files, which setup chooses separately.
-base_compose() { compose_without "$READER_OVERLAY" "$(compose_without "$REMOTE_OVERLAY" "$1")"; }
+# base_compose LIST: COMPOSE_FILE LIST without the hosted-decider, cloud-reader and local-folder files, which setup chooses separately.
+base_compose() { compose_without "$FILES_OVERLAY" "$(compose_without "$READER_OVERLAY" "$(compose_without "$REMOTE_OVERLAY" "$1")")"; }
 
 # compose_set LIST: write COMPOSE_FILE. The default (just compose.yaml, or nothing) is stored as no line at all.
 compose_set() {
@@ -371,6 +374,76 @@ sync_decider_overlay() {
   else say "DECIDER_PROVIDER is not remote: took $REMOTE_OVERLAY out of COMPOSE_FILE (now ${after:-compose.yaml})."; fi
 }
 
+# ---- receipt storage: Nextcloud (the default) or a local folder (STORAGE=local, RECEIPTS_DIR) ----
+
+local_storage() { [[ -f .env && "$(env_lower STORAGE)" == local ]]; }
+# docker_dir: a folder path as Docker must get it for a bind mount: absolute, or starting with ./ or ../ ("receipt-files" or
+# "My Receipts" alone would be read as the name of a Docker volume, not a folder). A leading ~/ is your home folder.
+docker_dir() {
+  local d="$1"
+  [[ "$d" == "~" || "$d" == "~/"* ]] && d="$HOME${d#\~}"
+  case "$d" in /*|./*|../*|.|..) echo "$d" ;; *) echo "./$d" ;; esac
+}
+receipts_dir() { local d; d="$(env_get RECEIPTS_DIR)"; docker_dir "${d:-$DEFAULT_RECEIPTS_DIR}"; }
+# worker_uid: setup fills RECEIPTS_UID in both modes; direct compose falls back to the image uid.
+worker_uid() { local u=""; u="$(env_get RECEIPTS_UID)"; echo "${u:-$IMAGE_UID}"; }
+# worker_can_write: can the worker's user write in the folder $1? Exact when that user is you; otherwise by owner and mode.
+worker_can_write() {
+  local dir="$1" uid mode; uid="$(worker_uid)"
+  if [[ "$uid" == "$(id -u)" ]]; then [[ -w "$dir" && -x "$dir" ]]; return; fi
+  mode="$(stat -c %a -- "$dir" 2>/dev/null)" || return 1
+  if [[ "$(stat -c %u -- "$dir")" == "$uid" ]]; then (( (8#$mode & 8#300) == 8#300 )); else (( (8#$mode & 8#003) == 8#003 )); fi
+}
+# page_folder_keys: which folder settings (RECEIPTS_INBOX ...) the status page's Settings tab sets; those win over .env. Only the
+# names are looked for and printed, never a value from the file.
+page_folder_keys() {
+  local k found=()
+  [[ -s data/web-settings.json ]] || return 0
+  for k in RECEIPTS_INBOX RECEIPTS_PROCESSED RECEIPTS_REVIEW RECEIPTS_ARCHIVE; do
+    grep -qE "\"$k\"[[:space:]]*:" data/web-settings.json 2>/dev/null && found+=("$k")
+  done
+  echo "${found[*]}"
+}
+# files_place: where the receipt files are, for messages.
+files_place() { if local_storage; then echo "the receipt folder ($(receipts_dir))"; else echo Nextcloud; fi; }
+
+# fill_worker_ids: a missing RECEIPTS_UID/GID becomes the owner of an existing data/ (an upgrade keeps working as it did),
+# or else you. Never root: a run as root leaves them unset (the image's user) and says so.
+fill_worker_ids() {
+  local uid gid
+  [[ -n "$(env_get RECEIPTS_UID)" && -n "$(env_get RECEIPTS_GID)" ]] && return 0
+  if [[ -d data ]]; then uid="$(stat -c %u -- data)"; gid="$(stat -c %g -- data)"; else uid="$(id -u)"; gid="$(id -g)"; fi
+  if [[ "$uid" == 0 ]]; then
+    warn "Not setting RECEIPTS_UID to root. Run ./receipts as your own user, not as root, so the worker runs as you."
+    return 0
+  fi
+  [[ -n "$(env_get RECEIPTS_UID)" ]] || env_set RECEIPTS_UID "$uid"
+  [[ -n "$(env_get RECEIPTS_GID)" ]] || env_set RECEIPTS_GID "$gid"
+}
+
+# sync_storage_overlay: the local-folder file in COMPOSE_FILE exactly when STORAGE=local (without it the folder is not mounted
+# and the worker finds no receipts). The cloud-reader file stays last. Prints one line when it changed something.
+sync_storage_overlay() {
+  local before after raw
+  env_set RECEIPTS_HOST_DIR "$(realpath -m -- "$(receipts_dir)")"
+  fill_worker_ids
+  if local_storage; then
+    # The overlay reads RECEIPTS_DIR, RECEIPTS_UID and RECEIPTS_GID from .env as they are: make them what Docker needs.
+    raw="$(env_get RECEIPTS_DIR)"
+    if [[ -n "$raw" && "$(docker_dir "$raw")" != "$raw" ]]; then
+      env_set RECEIPTS_DIR "$(docker_dir "$raw")"
+      say "RECEIPTS_DIR is now \"$(receipts_dir)\" (Docker needs a path starting with / or ./ to mount a folder)."
+    fi
+  fi
+  before="$(env_get COMPOSE_FILE)"
+  if local_storage; then compose_add "$FILES_OVERLAY" >/dev/null; else compose_remove "$FILES_OVERLAY"; fi
+  compose_reader_last
+  after="$(env_get COMPOSE_FILE)"
+  [[ "$before" == "$after" ]] && return 0
+  if local_storage; then say "STORAGE=local: put $FILES_OVERLAY in COMPOSE_FILE (now ${after:-compose.yaml})."
+  else say "STORAGE is not local: took $FILES_OVERLAY out of COMPOSE_FILE (now ${after:-compose.yaml})."; fi
+}
+
 # With the hosted decider and a cloud reader at once, the decider's name and place check would send the raw receipt text to the
 # reader's provider. The worker refuses that unless CLOUD_NAME_SCAN=true. Explain it and ask; true (0) when it is accepted.
 cloud_scan_accepted() { case "$(env_get CLOUD_NAME_SCAN | tr '[:upper:]' '[:lower:]')" in true|1|yes|on) return 0 ;; *) return 1 ;; esac; }
@@ -386,11 +459,124 @@ cloud_scan_optin() {
 # prepare_hosting: what start, restart and update all do before touching Docker. COMPOSE_FILE must agree with DECIDER_PROVIDER and
 # READER_PROVIDER, and the hosted decider with a cloud reader needs CLOUD_NAME_SCAN=true (else the worker would refuse to start).
 prepare_hosting() {
-  sync_decider_overlay # a hand-edited DECIDER_PROVIDER, READER_PROVIDER or COMPOSE_FILE that disagree
+  sync_decider_overlay # a hand-edited DECIDER_PROVIDER, READER_PROVIDER, STORAGE or COMPOSE_FILE that disagree
   sync_reader_overlay
+  sync_storage_overlay
+  (umask 077 && mkdir -p -m 700 data)
+  check_data_owner || die "Fix data/ ownership before starting a container."
+  if local_storage && [[ ! -d "$(receipts_dir)" ]]; then
+    die "STORAGE=local, but the receipt folder \"$(receipts_dir)\" (RECEIPTS_DIR) is not there. Run ./receipts setup to create it, or fix RECEIPTS_DIR in .env."
+  fi
+  # Its four folders, for a hand-edited .env or a folder a migration filled: in dry run the worker creates none itself.
+  if local_storage; then make_local_folders quiet || die "Could not create the receipt folders in \"$(receipts_dir)\"."; fi
   if remote_reader && remote_decider && ! cloud_scan_accepted; then
     die "READER_PROVIDER=remote and DECIDER_PROVIDER=remote together send the raw receipt text to the reader's provider for the name and place check. Set CLOUD_NAME_SCAN=true in .env to accept that, or switch one of them to local (./receipts setup)."
   fi
+}
+
+
+# Check only the directory owner and mode, never its contents.
+check_data_owner() {
+  [[ -d data ]] || return 0
+  if [[ "$(stat -c %u -- data)" != "$(worker_uid)" ]]; then
+    warn "data/ belongs to user id $(stat -c %u -- data); the worker runs as $(worker_uid). To keep data private and writable, run: sudo chown -R $(worker_uid):$(env_get RECEIPTS_GID) data"
+    return 1
+  fi
+}
+
+worker_one_off() {
+  prepare_hosting
+  docker compose run "$@"
+}
+
+# storage_prepare: check and build for migrate-storage-cli.js, and find out (read only, the worker may still run) which other
+# storage it needs: the old one it reads, or an unfinished run's destination that a cancel cleans up (--source-info says which).
+# Sets STORAGE_FILES (COMPOSE_FILE for the run) and STORAGE_RUN (the extra docker compose run options). The current local folder
+# is mounted only when the storage is local, the other one only when it is a local folder that is there: a Nextcloud-to-Nextcloud
+# move needs no folder on this computer. --remember with the local folder gone (moved away): nothing is mounted at /receipts (Docker
+# would make an empty one owned by root); the worker knows the moved folder by its marker. No python: the CLI reads data/.
+STORAGE_FILES="" STORAGE_RUN=()
+storage_prepare() {
+  need_env
+  sync_storage_overlay
+  (umask 077 && mkdir -p -m 700 data)
+  check_data_owner || die "Fix data/ ownership before migration."
+  STORAGE_FILES="$(env_get COMPOSE_FILE)"; STORAGE_FILES="${STORAGE_FILES:-compose.yaml}"
+  if local_storage && [[ ! -d "$(receipts_dir)" ]]; then
+    [[ "${1:-}" == --remember ]] || die "The receipt folder $(receipts_dir) is missing. Run ./receipts setup or fix RECEIPTS_DIR first."
+    STORAGE_FILES="$(compose_without "$FILES_OVERLAY" "$STORAGE_FILES")"; STORAGE_FILES="${STORAGE_FILES:-compose.yaml}"
+  elif local_storage; then
+    make_local_folders quiet || die "Could not create the receipt folders in \"$(receipts_dir)\". Nothing was changed."
+  fi
+  COMPOSE_FILE="$STORAGE_FILES" docker compose build worker
+  local info role other_dir mount_dir account
+  info="$(COMPOSE_FILE="$STORAGE_FILES" docker compose run --rm --no-deps worker node src/migrate-storage-cli.js --source-info "$@")" \
+    || die "Could not read which storage the receipts are recorded in (see above). Nothing was changed."
+  role="old storage"
+  grep -qx 'from_role=destination' <<<"$info" && role="new storage of the unfinished migration"
+  other_dir="$(sed -n 's/^from_host_dir=//p' <<<"$info")"
+  account="$(sed -n 's/^from_account=//p' <<<"$info")"
+  mount_dir="$other_dir"
+  case "$mount_dir" in project:*) mount_dir="$PWD/${mount_dir#project:}" ;; esac
+  STORAGE_RUN=(-e RECEIPTS_SERVICES_STOPPED=1)
+  if [[ -n "$mount_dir" && -d "$mount_dir" ]]; then
+    STORAGE_RUN+=(-v "$mount_dir:/migration-source" -e RECEIPTS_SOURCE_MOUNT=/migration-source -e "RECEIPTS_SOURCE_HOST_DIR=$other_dir")
+  elif [[ -n "$mount_dir" ]]; then
+    warn "The $role, the folder $mount_dir, is not there."
+  fi
+  if grep -qx 'needs_source_password=1' <<<"$info" && [[ -z "${MIGRATION_SOURCE_APP_PASSWORD:-}" ]]; then
+    [[ -t 0 ]] || die "The $role is Nextcloud $account, not the account in .env: set MIGRATION_SOURCE_APP_PASSWORD to its app password and run this again."
+    local pw=""
+    read -r -s -p "  App password of Nextcloud $account, the $role (not saved anywhere): " pw; echo
+    [[ -n "$pw" ]] || die "No app password given. Nothing was changed."
+    export MIGRATION_SOURCE_APP_PASSWORD="$pw"
+  fi
+  if [[ -n "${MIGRATION_SOURCE_APP_PASSWORD:-}" ]]; then
+    export MIGRATION_SOURCE_ACCOUNT="$account"
+    STORAGE_RUN+=(-e MIGRATION_SOURCE_APP_PASSWORD -e MIGRATION_SOURCE_ACCOUNT)
+  fi
+}
+
+# worker_running FILES: prints "worker" when the worker container runs; fails (never "not running") when Docker can't tell.
+worker_running() { COMPOSE_FILE="$1" docker compose ps --status running --services worker; }
+
+# storage_tool [options]: run migrate-storage-cli.js in a one-off container (after storage_prepare, with the worker stopped).
+storage_tool() {
+  local running
+  running="$(worker_running "$STORAGE_FILES")" || die "Could not check that the worker is stopped (docker compose ps failed). Nothing was changed."
+  [[ -z "$running" ]] || die "Stop the worker and its web app before migration."
+  COMPOSE_FILE="$STORAGE_FILES" docker compose run --rm --no-deps "${STORAGE_RUN[@]}" worker node src/migrate-storage-cli.js "$@"
+}
+
+cmd_migrate_storage() {
+  need_env
+  if [[ $# -gt 1 || ( $# -eq 1 && "$1" != --adopt && "$1" != --cancel && "$1" != --into-used ) ]]; then
+    die "Usage: ./receipts migrate-storage [--adopt|--cancel|--into-used]"
+  fi
+  local args=("$@") rc=0 was_running
+  if [[ "${1:-}" == --adopt ]]; then
+    say "Adopt the configured storage as the home of your existing receipts."
+    say "Receipt files and JSON summaries must already be there, under the same folder paths."
+    say "Use this for the same storage reached another way that the worker did not recognize by its marker file: a local folder you moved as a whole, or another spelling of the same Nextcloud address or login."
+    say "It refuses changed receipt folder paths: for those, run ./receipts migrate-storage without --adopt, and it moves the files."
+    warn "No files will be copied or verified. Existing receipt state will be kept. Adopting the wrong account or folder can leave receipts unavailable."
+    yn "Are the existing receipts already at the configured location?" N || return 0
+    args+=(--confirm-adopt)
+  fi
+  storage_prepare "${args[@]}"
+  was_running="$(worker_running "$STORAGE_FILES")" || die "Could not check whether the worker runs (docker compose ps failed). Nothing was changed."
+  docker compose stop worker
+  ( storage_tool "${args[@]}" ) || rc=$?
+  if (( rc != 0 )); then
+    warn "migrate-storage stopped (see above). Nothing that was finished is lost: run ./receipts migrate-storage again to carry on. A copy that has not been committed can be undone with ./receipts migrate-storage --cancel; a folder move that has started only goes forward."
+  fi
+  if [[ -z "$was_running" ]]; then
+    say "The worker was not running before, so it was left stopped. Start it with: ./receipts start"
+  elif ! docker compose up -d worker; then
+    warn "The worker did not start again. Start it with: ./receipts start"
+    (( rc != 0 )) || rc=1
+  fi
+  return "$rc"
 }
 
 # ---- Docker helpers ----
@@ -429,6 +615,7 @@ quiet() { grep --line-buffered -v -E 'Breadcrumb|^ *(message|category):|^\}|^Syn
 # Run one worker script (src/$1 with the remaining arguments) in a throwaway container, and exit with its status.
 one_off() {
   need_env
+  prepare_hosting # every container with a local bind mount needs the folder preflight
   "${ONE_OFF[@]}" node "src/$1" "${@:2}" 2>&1 | quiet
   exit "${PIPESTATUS[0]}"
 }
@@ -1135,12 +1322,104 @@ setup_env() {
   if [[ -z "$(env_get ACTUAL_E2E_PASSWORD)" && ( $ASKED == 1 || $NEW_ENV == 1 ) ]]; then
     ask_value ACTUAL_E2E_PASSWORD "only if the budget uses end-to-end encryption (Enter to skip)" secret optional
   fi
-  env_missing NEXTCLOUD_URL && ask_value NEXTCLOUD_URL "your Nextcloud address, e.g. https://cloud.example.lan"
   fix_site_url ACTUAL_SERVER_URL
-  fix_site_url NEXTCLOUD_URL
-  env_missing NEXTCLOUD_USER && ask_value NEXTCLOUD_USER "your Nextcloud login name"
-  env_missing NEXTCLOUD_APP_PASSWORD && ask_value NEXTCLOUD_APP_PASSWORD "Nextcloud: Personal settings > Security > Create new app password" secret
+  choose_storage
+  if ! local_storage; then
+    env_missing NEXTCLOUD_URL && ask_value NEXTCLOUD_URL "your Nextcloud address, e.g. https://cloud.example.lan"
+    fix_site_url NEXTCLOUD_URL
+    env_missing NEXTCLOUD_USER && ask_value NEXTCLOUD_USER "your Nextcloud login name"
+    env_missing NEXTCLOUD_APP_PASSWORD && ask_value NEXTCLOUD_APP_PASSWORD "Nextcloud: Personal settings > Security > Create new app password" secret
+  fi
+  if [[ "${MIGRATE_STORAGE:-0}" != 0 ]]; then
+    make_local_folders
+    if [[ "$MIGRATE_STORAGE" == 2 ]] || yn "Copy and verify existing receipts into the new storage now? Originals will stay in place." N; then
+      cmd_migrate_storage
+    else
+      warn "The worker stays paused until you run ./receipts migrate-storage."
+    fi
+  fi
   say ".env has everything it needs."
+}
+
+remember_storage_switch() {
+  [[ $NEW_ENV != 1 ]] || return 0
+  # Capture effective old folders, including web settings, before changing STORAGE (only the current storage is read).
+  storage_prepare --remember
+  local result was_running
+  was_running="$(worker_running "$STORAGE_FILES")" || die "Could not check whether the worker runs (docker compose ps failed). STORAGE was not changed."
+  docker compose stop worker
+  if ! result="$(storage_tool --remember)"; then
+    [[ -z "$was_running" ]] || docker compose up -d worker || warn "The worker did not start again. Start it with: ./receipts start"
+    die "Could not record the current storage (see above). STORAGE was not changed."
+  fi
+  say "$result"
+  if [[ "$result" == *"Existing receipts found."* ]]; then MIGRATE_STORAGE=1; else MIGRATE_STORAGE=2; fi
+}
+
+# choose_storage: Nextcloud or a folder on this computer (STORAGE). The default: what .env already says, else Nextcloud when
+# .env has Nextcloud details, else (a fresh install) a local folder, since it needs nothing else set up. --yes takes that default.
+choose_storage() {
+  local current dflt=N dir answer
+  MIGRATE_STORAGE=0
+  current="$(env_lower STORAGE)"
+  [[ $NEW_ENV == 1 ]] && current="" # the example's STORAGE line is not a choice yet
+  [[ $NEW_ENV != 1 && -z "$current" ]] && current=nextcloud # an existing .env without STORAGE is Nextcloud (the worker's default)
+  if [[ "$current" == local ]]; then dflt=Y
+  elif [[ "$current" != nextcloud ]] && { env_missing NEXTCLOUD_URL || [[ -z "$(env_get NEXTCLOUD_USER)" ]]; }; then dflt=Y; fi
+  say "Where should the receipt files be kept?"
+  say "  Nextcloud: upload from your phone with the Nextcloud app; needs a Nextcloud server and an app password."
+  say "  A local folder: a folder on this computer; add receipts with + Add receipt on the status page, or sync the folder with any tool."
+  if yn "Use a local folder instead of Nextcloud?" "$dflt"; then
+    if [[ "$current" != local ]]; then
+      remember_storage_switch
+      env_set STORAGE local
+    fi
+    dir="$(receipts_dir)"
+    if [[ $YES != 1 ]]; then
+      read -r -p "  Folder for the receipts [$dir]: " answer || answer=""
+      [[ -n "$answer" ]] && dir="$answer"
+    fi
+    dir="$(docker_dir "$dir")"
+    [[ "$dir" == *:* ]] && die "RECEIPTS_DIR can't contain a colon (Docker reads it as a separator): \"$dir\""
+    if [[ "$current" == local && "$(realpath -m -- "$dir")" != "$(realpath -m -- "$(receipts_dir)")" ]]; then remember_storage_switch; fi
+    env_set RECEIPTS_DIR "$(realpath -m -- "$dir")"
+    # The worker runs as you, so the folder stays yours and private (compose.local-files.yaml).
+    env_set RECEIPTS_UID "$(id -u)"; env_set RECEIPTS_GID "$(id -g)"
+    say "Receipts will be kept in \"$dir\" (STORAGE=local). The worker will run as you (user id $(id -u)) to use it."
+  else
+    if [[ "$current" != nextcloud ]]; then remember_storage_switch; env_set STORAGE nextcloud; fi
+    say "Receipts will be kept in Nextcloud (STORAGE=nextcloud)."
+  fi
+}
+
+# make_local_folders: RECEIPTS_DIR and its Inbox, Processed, Needs review and Archive, made private (umask 077) and yours: the worker
+# runs as you (RECEIPTS_UID), so nothing needs another owner. A folder that is already there keeps its mode.
+# $1 = quiet (start, update, migrate-storage): no summary, and nothing made while the Settings tab names other folders.
+make_local_folders() {
+  local dir sub keys quiet="${1:-}"
+  dir="$(receipts_dir)"
+  [[ "$quiet" == quiet && -n "$(page_folder_keys)" ]] && return 0
+  for sub in "" "$(env_get RECEIPTS_INBOX)" "$(env_get RECEIPTS_PROCESSED)" "$(env_get RECEIPTS_REVIEW)" "$(env_get RECEIPTS_ARCHIVE)"; do
+    (umask 077 && mkdir -p -- "$dir${sub:+/${sub#/}}") || { warn "Couldn't create \"$dir${sub:+/${sub#/}}\"."; return 1; }
+  done
+  # Unset folder settings mean the defaults (config.js): create those too.
+  for sub in Inbox Processed "Needs review" Archive; do
+    case "$sub" in
+      Inbox) [[ -n "$(env_get RECEIPTS_INBOX)" ]] && continue ;;
+      Processed) [[ -n "$(env_get RECEIPTS_PROCESSED)" ]] && continue ;;
+      "Needs review") [[ -n "$(env_get RECEIPTS_REVIEW)" ]] && continue ;;
+      Archive) [[ -n "$(env_get RECEIPTS_ARCHIVE)" ]] && continue ;;
+    esac
+    (umask 077 && mkdir -p -- "$dir/$sub") || { warn "Couldn't create \"$dir/$sub\"."; return 1; }
+  done
+  [[ "$quiet" == quiet ]] || say "The receipt folder is \"$dir\"."
+  if ! worker_can_write "$dir"; then
+    warn "The worker runs as user id $(worker_uid) and can't write in \"$dir\" (it belongs to user id $(stat -c %u -- "$dir")). Choose a folder of yours, or make this one yours."
+  fi
+  keys="$(page_folder_keys)"
+  if [[ -n "$keys" ]]; then
+    warn "The status page's Settings tab sets $keys, which win over .env. These folders were made from .env: check that the ones set on the page exist in \"$dir\"."
+  fi
 }
 
 # gpu_vram_mib: the largest AMD/Intel GPU memory the kernel reports, in MiB, or nothing.
@@ -1204,8 +1483,15 @@ setup_models() {
 }
 
 setup_inbox() {
+  sync_storage_overlay # after step 3, which may have rewritten COMPOSE_FILE
+  if local_storage; then
+    say "== 5/6 Receipt folder =="
+    make_local_folders || warn "Create the folders yourself before starting."
+    return 0
+  fi
   say "== 5/6 Nextcloud folder =="
-  say "Receipts are read from $(env_get RECEIPTS_INBOX) in your Nextcloud."
+  local inbox; inbox="$(env_get RECEIPTS_INBOX)"
+  say "Receipts are read from ${inbox:-/Receipts/Inbox} in your Nextcloud."
   if yn "Create that folder now over WebDAV?" N; then make_inbox || true; else say "Create it in Nextcloud yourself before uploading receipts."; fi
 }
 
@@ -1255,10 +1541,22 @@ setup_start() {
   fi
 }
 
+# inbox_name: the inbox folder inside the local receipt folder, for messages; empty when the Settings tab sets it (not read here).
+inbox_name() {
+  local i
+  [[ " $(page_folder_keys) " == *" RECEIPTS_INBOX "* ]] && return 0
+  i="$(env_get RECEIPTS_INBOX)"; i="${i:-/Inbox}"; echo "${i#/}"
+}
+
 setup_next_steps() {
   say ""
   say "Done. Next:"
-  say "  1. Upload a test receipt to the Nextcloud inbox folder."
+  if local_storage; then
+    if [[ -n "$(inbox_name)" ]]; then say "  1. Put a test receipt in \"$(receipts_dir)/$(inbox_name)\", or add one with \"+ Add receipt\" on the status page."
+    else say "  1. Put a test receipt in the inbox folder set on the Settings tab (in \"$(receipts_dir)\"), or add one with \"+ Add receipt\" on the status page."; fi
+  else
+    say "  1. Upload a test receipt to the Nextcloud inbox folder."
+  fi
   say "  2. Open the status page (below) and press \"Check now\". Dry run: nothing is changed."
   say "  3. When the results look right, press \"Go live\" on the same page."
   say ""
@@ -1363,6 +1661,7 @@ print_worker_alert() {
 
 cmd_status() {
   local c note
+  check_data_owner || true
   echo "mode: $(mode)"
   note="$(mode_note)"; [[ -z "$note" ]] || echo "  $note"
   wait_for
@@ -1370,6 +1669,14 @@ cmd_status() {
   if remote_reader; then echo "  reader                 cloud ($(env_get READER_MODEL) at $(env_get READER_URL)); receipt photos leave this machine; ./receipts check tests the key"
   else echo "  reader                 $(reader_name)"; fi
   if remote_decider; then echo "  decider                TypeSafe (hosted, anonymized); ./receipts check tests the key"; fi
+  if local_storage; then
+    local dir; dir="$(receipts_dir)"
+    if [[ ! -d "$dir" ]]; then echo "  storage                local folder \"$dir\": NOT THERE (./receipts setup creates it)"
+    elif ! worker_can_write "$dir"; then echo "  storage                local folder \"$dir\": the worker (user id $(worker_uid)) can't write there"
+    else echo "  storage                local folder \"$dir\"; ./receipts check tests it is writable"; fi
+  else
+    echo "  storage                Nextcloud"
+  fi
   if [[ -f data/heartbeat ]]; then echo "last poll: $(cat data/heartbeat)"; fi
   if [[ -s data/web-settings.json ]]; then echo "Some settings are set on the status page (Settings tab); they win over .env."; fi
   print_worker_alert
@@ -1395,7 +1702,7 @@ cmd_mode() {
       echo "It switches at the start of its next check; ./receipts run-now does that right away."
       ;;
     live)
-      echo "Live mode: the worker will split and recategorize transactions in Actual and move receipts in Nextcloud."
+      echo "Live mode: the worker will split and recategorize transactions in Actual and move receipts in $(files_place)."
       echo "Receipts already seen in dry run are processed again for real."
       read -r -p "Type 'live' to confirm: " answer
       [[ "$answer" == live ]] || { echo "Cancelled."; exit 1; }
@@ -1460,8 +1767,11 @@ Usage: ./receipts <command>
   restart         restart the worker (after editing .env)
   status          mode, container health, and the last log lines
   logs            follow the worker log (Ctrl-C to stop watching; the worker keeps running)
-  run-now         check the Nextcloud inbox now instead of waiting for the next poll (same as the status page button)
-  check           test the connections to Nextcloud, Actual and the models (with the hosted decider: its address and API key); changes nothing
+  run-now         check the inbox now instead of waiting for the next poll (same as the status page button)
+  migrate-storage [--adopt|--cancel|--into-used] after a storage or folder change: copy and verify receipts to a new storage
+                  (originals stay), or move them to new folders in the same storage; --adopt: the same storage reached another
+                  way; --cancel: undo an unfinished copy; --into-used: copy into folders that already hold other files
+  check           test the connections to Nextcloud (or the local receipt folder), Actual and the models (with the hosted decider: its address and API key); changes nothing
   mode dry|live   switch between dry run (changes nothing) and live (writes to Actual, moves files) at the next check;
                   same as the switch on the status page
   update          rebuild the worker after a code update or a change to a pinned ACTUAL_API_VERSION, and restart it
@@ -1499,6 +1809,7 @@ case "$cmd" in
   status) cmd_status ;;
   logs) cmd_logs ;;
   run-now) cmd_run_now ;;
+  migrate-storage) cmd_migrate_storage "$@" ;;
   check) one_off check.js ;;
   mode) cmd_mode "$@" ;;
   update) cmd_update ;;

@@ -5,24 +5,36 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { config } from './config.js';
 import { writePrivate } from './private-files.js';
+import { assertStorage, recordedStorage, storageIdentity, storageFile, writeRecord, legacyStorage } from './storage-state.js';
 
 /** The saved state. No file yet (ENOENT) is an empty state; anything else (unreadable, damaged, not an object) throws,
  *  so nobody carries on with an empty state and writes it over the real one. */
-export async function loadState() {
+export async function loadState({ allowStorageMismatch = false } = {}) {
   let text;
   try {
     text = await fs.readFile(config.statePath, 'utf8');
   } catch (err) {
-    if (err.code === 'ENOENT') return {};
+    if (err.code === 'ENOENT') {
+      if (!allowStorageMismatch && !await recordedStorage()) await writeRecord(storageFile('storage.json'), storageIdentity());
+      if (!allowStorageMismatch) await assertStorage();
+      return {};
+    }
     throw new Error(`could not read ${config.statePath}: ${err.message}`, { cause: err });
   }
+  let state;
   try {
-    const state = JSON.parse(text);
+    state = JSON.parse(text);
     if (typeof state !== 'object' || state === null || Array.isArray(state)) throw new Error('it is not a JSON object');
-    return state;
   } catch (err) {
     throw new Error(`${config.statePath} is damaged (${err.message}); fix or restore it`, { cause: err });
   }
+  if (!allowStorageMismatch) {
+    const saved = await recordedStorage();
+    if (!saved) await writeRecord(storageFile('storage.json'), config.storage.kind === 'nextcloud' ? storageIdentity() : legacyStorage());
+    await assertStorage();
+
+  }
+  return state;
 }
 // Entries the status page cleared ("Try again"). The worker holds state in memory for a whole cycle and saves all of it,
 // which would put a cleared entry back; saveState drops these from what it writes.
@@ -71,13 +83,17 @@ const queue = (fn) => {
 
 // Write to a temp file and rename it over state.json, so a crash mid-write can't leave half a file.
 async function writeState(state) {
-  await loadState(); // throws when the file on disk is unreadable or damaged: never write over it
+  await loadState({ allowStorageMismatch: true }); // throws when the file on disk is unreadable or damaged: never write over it
   for (const k of forgotten) delete state[k];
   // Unique per write (not the pid: node is PID 1 in every container, and the panel and worker share this file).
   const tmp = path.join(path.dirname(config.statePath), `.${path.basename(config.statePath)}.${randomUUID()}.tmp`);
   try {
     await writePrivate(tmp, JSON.stringify(state, null, 2));
+    const file = await fs.open(tmp, 'r');
+    try { await file.sync(); } finally { await file.close(); }
     await fs.rename(tmp, config.statePath);
+    const dir = await fs.open(path.dirname(config.statePath), 'r');
+    try { await dir.sync(); } finally { await dir.close(); }
   } catch (err) {
     await fs.rm(tmp, { force: true });
     throw err;

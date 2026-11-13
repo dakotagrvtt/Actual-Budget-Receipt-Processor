@@ -8,7 +8,7 @@ import { knownCategories } from './known-categories.js';
 import { exclusionRules, loadOverrides } from './web-settings.js';
 import { keywordCandidates, syncLearned, addKeyword, normalize, removeKeyword, restoreKeyword, findKeyword, loadKeywords, strengthOf } from './keywords.js';
 import { forgetLesson, loadLessonFile, restoreLesson } from './memory.js';
-import { forgetKeys, loadState, parseStateKey } from './state.js';
+import { forgetKeys, loadState, parseStateKey, patchEntry } from './state.js';
 import { resolveDryRun, writeSettings } from './settings.js';
 import { addWord, removeWord, addNotName, removeNotName, loadPrivate, validWord, validPlace, addPlaceWord, removePlaceWord, addNotPlace, removeNotPlace, restoreFound, restoreFoundPlace } from './private-words.js';
 
@@ -277,10 +277,28 @@ async function tryAgainNow(form, deps) {
   const name = parseStateKey(key).file.split('/').pop();
   if (!entry.filedAs) throw new PanelError(`This entry doesn't record where ${name} was filed (it is from an older version), so it can't be moved back safely. Delete it from Needs review and upload the receipt again.`);
   const nextcloud = deps.nextcloud ?? (await import('./nextcloud.js'));
-  const out = await nextcloud.requeueFromReview(entry.filedAs, name);
+  // The version that is moved, so a file of the same name in the inbox is never taken for it (requeue.js). Not in review just now (a
+  // move of it under way, say): the version it was filed as, from its key.
+  let etag;
+  try {
+    etag = (await nextcloud.statPath?.(entry.filedAs))?.etag;
+  } catch (err) {
+    if (err.status !== 404) throw new PanelError(`Can't look at ${name} in the Needs review folder (${err.message}). Nothing was moved.`);
+  }
+  etag = String(etag || key.slice(key.lastIndexOf('@') + 1)).replaceAll('"', '');
+  // Written down before the move: stopped between the move and the clearing below, the worker finishes it (requeue.js replayRequeues).
+  try {
+    await patchEntry(key, (e) => (e ? { ...e, requeue: { from: entry.filedAs, name, etag } } : e));
+  } catch (err) {
+    throw new PanelError(`Can't update the list of receipts (${err.message}). Nothing was moved.`);
+  }
+  const out = await nextcloud.requeueFromReview(entry.filedAs, name, etag);
+  if (!out || out.refused || out.unsure) await patchEntry(key, (e) => (e ? (({ requeue: _gone, ...rest }) => rest)(e) : e)).catch(() => {}); // nothing moved: no note left
   if (!out) throw new PanelError(`Couldn't find ${name} in the Needs review folder (expected ${entry.filedAs}). Upload the receipt again.`);
   if (out.refused === 'applied') throw new PanelError(`The summary next to ${name} says it was applied in Actual, so it was not moved. Check Actual; if it needs redoing, undo it there, delete the file from Needs review and upload the receipt again.`);
   if (out.refused === 'exists') throw new PanelError(`The inbox already has a file called ${name}, so nothing was moved. Rename or remove one of them, then try again.`);
+  if (out.refused === 'changed') throw new PanelError(`${name} in the Needs review folder changed just now, so nothing was moved. Try again in a minute.`);
+  if (out.unsure) throw new PanelError(`${name} is not in the Needs review folder just now, and the inbox has another file with that name, so nothing was changed. Try again in a minute.`);
   try {
     await forgetKeys([key]);
   } catch (err) {

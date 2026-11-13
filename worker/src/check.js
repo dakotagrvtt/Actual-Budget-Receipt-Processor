@@ -1,7 +1,10 @@
-// Setup check: can the worker reach everything it needs? Read-only: changes nothing in Actual or Nextcloud.
+// Setup check: can the worker reach everything it needs? Read-only: changes nothing in Actual or Nextcloud (with STORAGE=local it
+// writes and removes one empty hidden file, to test the folder is writable).
 // Run with `./receipts check` (uses its own budget copy, so it's safe while the worker runs).
 import './private-umask.js';
-import { config } from './config.js';
+import path from 'node:path';
+import { config, filesPlace } from './config.js';
+import { checkWritable } from './local-files.js';
 import { resolveDryRun, envDisagreement } from './settings.js';
 import { fetchServerVersion } from './actual-version.js';
 import { readUpgradeMarker } from './actual-upgrade.js';
@@ -32,7 +35,7 @@ const step = async (name, fn) => {
 // The same rules as the worker: data/settings.json, then .env.
 const resolved = resolveDryRun();
 config.dryRun = resolved.dryRun;
-console.log(`mode: ${config.dryRun ? 'DRY RUN (changes nothing)' : 'LIVE (writes to Actual, moves files in Nextcloud)'}`);
+console.log(`mode: ${config.dryRun ? 'DRY RUN (changes nothing)' : `LIVE (writes to Actual, moves files in ${filesPlace()})`}`);
 if (resolved.source === 'unusable') warn('data/settings.json exists but is unusable, so this is a dry run until it is fixed or deleted (./receipts mode dry|live rewrites it)');
 const disagree = envDisagreement(resolved);
 if (disagree) warn(disagree);
@@ -80,13 +83,20 @@ if (config.decider.provider === 'remote') {
   });
 }
 
-console.log('nextcloud');
-await step('Nextcloud', async () => {
-  const inbox = await nextcloud.listFolder(config.nextcloud.inbox);
+const local = config.storage.kind === 'local';
+console.log(local ? 'receipt folder' : 'nextcloud');
+await step(local ? 'receipt folder' : 'Nextcloud', async () => {
+  if (local) {
+    // Hidden probes, made and removed again, check writing and hard-link support.
+    await checkWritable(config.storage.root);
+    ok(`receipt folder ${config.storage.root} (RECEIPTS_DIR ${config.storage.hostDir} on the host) is there, writable, and supports hard links`);
+    await checkWritable(path.join(config.storage.root, config.nextcloud.inbox));
+  }
+  const inbox = await nextcloud.listFolder(config.nextcloud.inbox, { names: () => false });
   ok(`inbox ${config.nextcloud.inbox}: ${inbox.length} receipt file(s) waiting`);
   for (const folder of [config.nextcloud.processed, config.nextcloud.review]) {
     try {
-      await nextcloud.listFolder(folder);
+      await nextcloud.listFolder(folder, { names: () => false });
       ok(`folder ${folder} exists`);
     } catch {
       if (config.dryRun) warn(`folder ${folder} doesn't exist yet (created on the first live run)`);

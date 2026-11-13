@@ -42,3 +42,12 @@ export async function readDrySummary(key) {
     return null;
   }
 }
+
+/** After a storage migration renamed state keys (old key => new key): keep each dry-run summary under its new key. Never throws. */
+export async function renameDrySummaries(keys) {
+  for (const [from, to] of keys) {
+    if (from === to) continue;
+    try { await fs.rename(fileOf(from), fileOf(to)); }
+    catch (err) { if (err.code !== 'ENOENT') log(`could not keep the dry-run summary of ${from}: ${err.message}`); }
+  }
+}

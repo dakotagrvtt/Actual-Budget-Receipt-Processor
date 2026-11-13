@@ -2,7 +2,7 @@
 // This module never writes to Actual. Normal receipts continue through the unattended worker unchanged.
 import crypto from 'node:crypto';
 import path from 'node:path/posix';
-import { config } from './config.js';
+import { config, filesPlace } from './config.js';
 import { loadState, saveState, parseStateKey, patchEntry } from './state.js';
 import { exclusive } from './session-lock.js';
 import { PanelError } from './panel-actions.js';
@@ -127,11 +127,11 @@ export async function commitResolution(form, out, deps = {}) {
       const pending = { summary: saved, from, action: form.get('action') };
       await patchEntry(id, (e) => ({ ...e, ...(from === inbox ? { filedAs: from } : {}), resolutionPending: pending }));
       try { await nc.refile(from, from, saved); }
-      catch (err) { throw new PanelError(`The corrected reading was kept, but could not be saved to Nextcloud (${err.message}). Find matching charges again to finish saving it. Nothing was changed in Actual.`); }
+      catch (err) { throw new PanelError(`The corrected reading was kept, but could not be saved to ${filesPlace()} (${err.message}). Find matching charges again to finish saving it. Nothing was changed in Actual.`); }
       if (!chosen) {
         if (from !== inbox) {
           const source = await nc.statPath(from);
-          if (!source.etag) throw new PanelError('Nextcloud did not return the photo version. Try again in a minute.');
+          if (!source.etag) throw new PanelError(`${filesPlace(true)} did not return the photo version. Try again in a minute.`);
           pending.fileEtag = source.etag; pending.moveRequested = true;
           await patchEntry(id, (e) => ({ ...e, resolutionPending: { ...pending } }));
           const moved = await nc.requeueFromReview(from, path.basename(inbox));
@@ -140,7 +140,7 @@ export async function commitResolution(form, out, deps = {}) {
           await patchEntry(id, (e) => ({ ...e, filedAs: pending.from, resolutionPending: { ...pending, from: pending.from } }));
         }
         const stat = await nc.statPath(inbox);
-        if (!stat.etag) throw new PanelError('The corrected reading was saved, but Nextcloud did not return its file version. Try again in a minute.');
+        if (!stat.etag) throw new PanelError(`The corrected reading was saved, but ${filesPlace()} did not return its file version. Try again in a minute.`);
         const nextId = `${inbox}@${stat.etag}`;
         const next = { done: false, at, lastmod: stat.lastmod ?? entry.lastmod ?? at, reading: { receipt, mode: summary.readWith ?? 'corrected reading', reader: (await import('./receipt.js')).currentReader() }, receiptFields: fields };
         const latest = await loadState();

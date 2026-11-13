@@ -18,6 +18,7 @@ export const SECTIONS = [
 ];
 
 // type: bool | number (min, max, int) | enum (values) | list | text | url | secret | folder | account (one of Actual's open accounts, or empty)
+// `storage: 'nextcloud'`: only used (and shown) with Nextcloud storage. `localDefault`: the default with STORAGE=local (config.js defaultFolders).
 // `required`: may not be empty. `pattern`/`check`: extra rules for text. `secret`: shown only as set / not set, never as a value.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function checkTimeZone(v) {
@@ -42,13 +43,13 @@ export const SETTINGS = [
   { key: 'ACTUAL_PASSWORD', section: 'connections', label: 'Actual server password', type: 'secret', required: true, default: '', help: 'The server password you log in with.' },
   { key: 'ACTUAL_SYNC_ID', section: 'connections', label: 'Actual sync ID', type: 'text', required: true, pattern: UUID, patternText: 'looks like 1a2b3c4d-1234-5678-9abc-def012345678', default: '', help: 'In Actual: Settings, Show advanced settings, Sync ID. Changing it points the worker at a different budget.' },
   { key: 'ACTUAL_E2E_PASSWORD', section: 'connections', label: 'Actual encryption password', type: 'secret', default: '', help: 'Only if the budget uses end-to-end encryption.' },
-  { key: 'NEXTCLOUD_URL', section: 'connections', label: 'Nextcloud address', type: 'url', required: true, default: '', help: 'The address you open Nextcloud at.' },
-  { key: 'NEXTCLOUD_USER', section: 'connections', label: 'Nextcloud user', type: 'text', required: true, default: '', help: 'The Nextcloud user name the receipts folders belong to.' },
-  { key: 'NEXTCLOUD_APP_PASSWORD', section: 'connections', label: 'Nextcloud app password', type: 'secret', required: true, default: '', help: 'In Nextcloud: Personal settings, Security, Create new app password.' },
-  { key: 'RECEIPTS_INBOX', section: 'connections', label: 'Inbox folder', type: 'folder', required: true, default: '/Receipts/Inbox', help: 'Where you upload receipts.' },
-  { key: 'RECEIPTS_PROCESSED', section: 'connections', label: 'Processed folder', type: 'folder', required: true, default: '/Receipts/Processed', help: 'Where receipts go once they are filed in Actual.' },
-  { key: 'RECEIPTS_REVIEW', section: 'connections', label: 'Needs review folder', type: 'folder', required: true, default: '/Receipts/Needs review', help: 'Where receipts go when a person should look at them.' },
-  { key: 'RECEIPTS_ARCHIVE', section: 'connections', label: 'Archive folder', type: 'folder', required: true, default: '/Receipts/Archive', help: 'Where receipts you have checked are moved to when you archive them (in a folder per month). It can\'t be the same as, or inside, the Processed or Needs review folder.' },
+  { key: 'NEXTCLOUD_URL', section: 'connections', storage: 'nextcloud', label: 'Nextcloud address', type: 'url', required: true, default: '', help: 'The address you open Nextcloud at. A new address for the same account is recognized by itself (the storage marker). Another server pauses receipt processing until you run ./receipts migrate-storage to copy the receipts there.' },
+  { key: 'NEXTCLOUD_USER', section: 'connections', storage: 'nextcloud', label: 'Nextcloud user', type: 'text', required: true, default: '', help: 'The Nextcloud user name the receipts folders belong to. A new login spelling of the same account is recognized by itself (the storage marker). Another account pauses processing until you run ./receipts migrate-storage to copy the receipts there.' },
+  { key: 'NEXTCLOUD_APP_PASSWORD', section: 'connections', storage: 'nextcloud', label: 'Nextcloud app password', type: 'secret', required: true, default: '', help: 'In Nextcloud: Personal settings, Security, Create new app password.' },
+  { key: 'RECEIPTS_INBOX', section: 'connections', label: 'Inbox folder', type: 'folder', required: true, default: '/Receipts/Inbox', localDefault: '/Inbox', help: 'Where you upload receipts. Changing a receipt folder pauses processing until ./receipts migrate-storage moves the files.' },
+  { key: 'RECEIPTS_PROCESSED', section: 'connections', label: 'Processed folder', type: 'folder', required: true, default: '/Receipts/Processed', localDefault: '/Processed', help: 'Where receipts go once they are filed in Actual.' },
+  { key: 'RECEIPTS_REVIEW', section: 'connections', label: 'Needs review folder', type: 'folder', required: true, default: '/Receipts/Needs review', localDefault: '/Needs review', help: 'Where receipts go when a person should look at them.' },
+  { key: 'RECEIPTS_ARCHIVE', section: 'connections', label: 'Archive folder', type: 'folder', required: true, default: '/Receipts/Archive', localDefault: '/Archive', help: 'Where receipts you have checked are moved to when you archive them (in a folder per month). It can\'t be the same as, or inside, the Processed or Needs review folder.' },
 
   // --- Matching ---
   { key: 'CASH_ACCOUNT', section: 'matching', label: 'Cash purchases go to', type: 'account', default: '', help: 'The Actual account that "Create in Actual" puts a cash purchase in (a cash receipt\'s page can pick another one for that receipt). Empty means not set. The list is what Actual had at the last check.' },
@@ -106,6 +107,10 @@ export const SETTINGS = [
 ];
 
 export const SETTINGS_BY_KEY = new Map(SETTINGS.map((s) => [s.key, s]));
+/** Is the setting used with this storage (local: STORAGE=local)? The Nextcloud login is not, with a local folder. */
+export const usedWith = (def, local) => !(local && def.storage === 'nextcloud');
+/** The built-in default with this storage. */
+export const defaultWith = (def, local) => (local && def.localDefault !== undefined ? def.localDefault : def.default);
 export const isSecret = (key) => SETTINGS_BY_KEY.get(key)?.type === 'secret';
 /** Keys that look like settings but are .env-only: the page says so instead of just "unknown". */
 export const ENV_ONLY_NOTE = 'That setting can only be changed in .env (then ./receipts restart).';

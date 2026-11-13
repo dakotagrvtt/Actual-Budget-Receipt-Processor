@@ -65,9 +65,13 @@ services:
       args:
         # "auto" = the worker installs the API version your Actual server runs, at start (cached under data/actual-api).
         ACTUAL_API_VERSION: ${ACTUAL_API_VERSION:-latest}
+    user: "${RECEIPTS_UID:-1000}:${RECEIPTS_GID:-1000}"
     container_name: receipt-worker
     env_file: .env
     environment:
+      - RECEIPTS_HOST_DIR=${RECEIPTS_HOST_DIR:-${RECEIPTS_DIR:-./receipt-files}}
+      - HOME=/tmp
+      - XDG_CACHE_HOME=/tmp/.cache
       - LLM_URL=http://llm:8080
       - D1_GGUF_URL=http://decider-gguf:8080
       - DECIDER_MODEL=${DECIDER_MODEL:-LiquidAI/d1-2B-GGUF:Q8_0}
@@ -85,10 +89,10 @@ services:
         condition: service_healthy
       decider-gguf:
         condition: service_healthy
-    # Healthy while the poll loop is alive: it touches /data/heartbeat every poll and after each receipt.
-    # A batch of receipts can take a while, so allow POLL_SECONDS plus an hour.
+    # Healthy while the poll loop is alive (it touches /data/heartbeat every poll and after each receipt; a batch can take a
+    # while, so POLL_SECONDS plus an hour is allowed) and no setup problem pauses it (the status page's banner says which).
     healthcheck:
-      test: ["CMD", "node", "-e", "const s=require('fs').statSync('/data/heartbeat'); process.exit(Date.now()-s.mtimeMs < ((+process.env.POLL_SECONDS||300)+3600)*1000 ? 0 : 1)"]
+      test: ["CMD", "node", "-e", "const fs=require('fs'); const s=fs.statSync('/data/heartbeat'); let a=null; try { a=JSON.parse(fs.readFileSync('/data/worker-alert.json','utf8')) } catch {} process.exit(Date.now()-s.mtimeMs < ((+process.env.POLL_SECONDS||300)+3600)*1000 && !(a && a.pausing!==false) ? 0 : 1)"]
       interval: 5m
       timeout: 10s
       start_period: 2m

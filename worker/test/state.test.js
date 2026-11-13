@@ -47,7 +47,7 @@ test('saveState and loadState use config.statePath; a missing file loads as empt
     assert.deepEqual(await loadState(), {});
     await saveState({ 'a.jpg@x': { done: true } });
     assert.deepEqual(await loadState(), { 'a.jpg@x': { done: true } });
-    assert.deepEqual(await fs.readdir(dir), ['state.json']); // the temp file was renamed away
+    assert.deepEqual(await fs.readdir(dir), ['state.json', 'storage.json']); // the temp file was renamed away
   } finally {
     config.statePath = was;
     await fs.rm(dir, { recursive: true });
@@ -63,7 +63,7 @@ test('100 concurrent saves: none fails, the file is the last write, no temp file
     const results = await Promise.allSettled(saves);
     assert.equal(results.filter((r) => r.status === 'rejected').length, 0);
     assert.equal((await loadState()).n, 99);
-    assert.deepEqual(await fs.readdir(dir), ['state.json']);
+    assert.deepEqual(await fs.readdir(dir), ['state.json', 'storage.json']);
   } finally {
     config.statePath = was;
     await fs.rm(dir, { recursive: true });

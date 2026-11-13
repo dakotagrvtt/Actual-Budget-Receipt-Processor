@@ -2,9 +2,10 @@
 // Same shape as panel-actions.js: each handler takes the submitted form, returns a short notice, or throws PanelError.
 // A change takes effect at the start of the next check (the worker reloads its config then); nothing here touches the running config.
 import crypto from 'node:crypto';
-import { reloadStatus } from './config.js';
+import { config, localStorageIn, reloadStatus, buildConfig } from './config.js';
+import { identityOf, recordedStorage, sameStorage, nothingOwed } from './storage-state.js';
 import { PanelError, offerUndo, checkUndo, categoriesData, UNDO_WINDOW_MS } from './panel-actions.js';
-import { SECTIONS, SETTINGS, SETTINGS_BY_KEY, SettingError, ENV_ONLY_NOTE, normalizeValue } from './web-settings-schema.js';
+import { SECTIONS, SETTINGS, SETTINGS_BY_KEY, SettingError, ENV_ONLY_NOTE, defaultWith, normalizeValue, usedWith } from './web-settings-schema.js';
 import { loadOverrides, effectiveSetting, exclusionRules, checkChanges, checkPairs, changeOverrides, restoreOverrides, resetAllOverrides, restoreAllOverrides, DamagedSettingsError } from './web-settings.js';
 import { knownAccounts } from './known-accounts.js';
 import { testChanged, ConnectionTestError } from './connection-test.js';
@@ -16,7 +17,7 @@ export const testDeps = {};
 const SAVED = 'Saved. It applies at the start of the next check.';
 const DAMAGED = 'The settings file is damaged, so nothing can be saved until it is reset. Press "Reset all to .env" on the Settings tab.';
 // Fields a settings form carries besides the settings themselves.
-const FORM_EXTRAS = new Set(['section', 'anyway', 'confirm', 'reset']);
+const FORM_EXTRAS = new Set(['section', 'anyway', 'confirm', 'reset', 'storage-change']);
 
 // ---- Undo: what a Settings change replaces is kept here, in memory, under a random id. The Undo link carries only the id (signed),
 // so a password's old value never travels in a link or a page. A restart forgets them (an Undo lasts 15 minutes anyway). ----
@@ -71,6 +72,27 @@ function sameAsCurrent(def, current, typed) {
   }
 }
 
+/**
+ * A save or reset that changes where the receipts are (the Nextcloud address or login, or a receipt folder) pauses the worker until
+ * ./receipts migrate-storage runs. Say so first; null when the storage stays the same, goes back to the recorded one, or nothing
+ * is recorded there yet (a fresh install: the worker records the new one by itself). tick: how to confirm it.
+ */
+async function storageChangeProblem(candidate, overrides, tick = 'Tick "Save a change of storage or folders" to save it.') {
+  const next = identityOf(candidate);
+  let now = null;
+  try { now = identityOf(buildConfig({ ...process.env, ...overrides.values }, { quiet: true })); } catch { /* the current settings don't build: compare with the record only */ }
+  if (now && sameStorage(now, next)) return null;
+  const recorded = await recordedStorage().catch(() => null);
+  if (recorded && sameStorage(recorded, next)) return null;
+  if (recorded && await nothingOwed(recorded).catch(() => false)) return null;
+  return `This changes where the receipt files are (the Nextcloud address or login, or a receipt folder). Nothing was changed. After such a change the worker pauses until you run ./receipts migrate-storage: it moves the files to the new folders, or copies them to another storage, and updates the records. ${tick}`;
+}
+/** The config a reset would give (the overrides without `keys`, or none); null when it does not build (the worker says why). */
+function configWithout(overrides, keys) {
+  const values = keys ? Object.fromEntries(Object.entries(overrides.values).filter(([k]) => !keys.includes(k))) : {};
+  try { return buildConfig({ ...process.env, ...values }, { quiet: true }); } catch { return null; }
+}
+
 /** Save one section of the Settings tab. Only values that differ from the current ones are written. */
 export function saveSettings(form, out) {
   return guarded(async () => {
@@ -79,8 +101,9 @@ export function saveSettings(form, out) {
     refuseIfDamaged(overrides);
     const typed = {};
     const retyped = []; // secrets typed in this request, even when equal to the current one
+    const local = localStorageIn(process.env);
     for (const def of SETTINGS) {
-      if (!form.has(def.key)) continue;
+      if (!form.has(def.key) || !usedWith(def, local)) continue; // the Nextcloud login is not on the page with a local folder
       const all = form.getAll(def.key);
       const raw = all[all.length - 1]; // a checkbox sends a hidden "false" first, then "true" when ticked
       if (def.type === 'secret' && raw === '') continue; // an empty password box means keep the current one
@@ -103,6 +126,10 @@ export function saveSettings(form, out) {
         throw new PanelError(`${err.message} Nothing was saved. Tick "Save even if the connection test fails" to save it anyway.`);
       }
     }
+    if (form.get('storage-change') !== 'yes') {
+      const problem = await storageChangeProblem(candidate, overrides);
+      if (problem) throw new PanelError(problem);
+    }
     const before = await changeOverrides(typed, { typed: retyped });
     offerSettingsUndo(out, 'undo-settings', { kind: 'keys', before, wrote: typed }, form);
     return SAVED;
@@ -116,6 +143,9 @@ export function resetSetting(form, out) {
     const overrides = loadOverrides();
     refuseIfDamaged(overrides);
     if (!Object.hasOwn(overrides.values, key)) return `${SETTINGS_BY_KEY.get(key).label} already uses the .env value.`;
+    const candidate = form.get('storage-change') === 'yes' ? null : configWithout(overrides, [key]);
+    const problem = candidate && await storageChangeProblem(candidate, overrides, 'Tick "Save a change of storage or folders" under Save options, then press "Use setup value" again.');
+    if (problem) throw new PanelError(problem);
     const before = await changeOverrides({ [key]: null });
     offerSettingsUndo(out, 'undo-settings', { kind: 'keys', before, wrote: { [key]: null } }, form);
     return `${SETTINGS_BY_KEY.get(key).label} uses the .env value again. It applies at the start of the next check.`;
@@ -128,6 +158,10 @@ export function resetAllSettings(form, out) {
     const overrides = loadOverrides();
     if (!overrides.damaged && form.get('confirm') !== 'yes') throw new PanelError('Tick the box to confirm resetting every setting on this page to its .env value.');
     if (!overrides.damaged && !overrides.exists) return 'Nothing was set on this page.';
+    // A damaged file is already out of use (setup values apply), so its reset changes nothing about the storage.
+    const candidate = overrides.damaged || form.get('storage-change') === 'yes' ? null : configWithout(overrides, null);
+    const problem = candidate && await storageChangeProblem(candidate, overrides, 'Tick "Also reset a change of storage or folders" to reset anyway.');
+    if (problem) throw new PanelError(problem);
     const was = await resetAllOverrides();
     if (!overrides.damaged && Object.keys(was).length) offerSettingsUndo(out, 'undo-settings', { kind: 'all', values: was }, form);
     return overrides.damaged ? 'The damaged settings file was replaced. Every setting uses its .env value again.' : 'Every setting uses its .env value again. It applies at the start of the next check.';
@@ -210,13 +244,15 @@ export async function includeCategory(form, out) {
  */
 export function settingsData() {
   const overrides = loadOverrides();
+  const local = localStorageIn(process.env);
   const sections = SECTIONS.map((s) => ({
     ...s,
-    settings: SETTINGS.filter((d) => d.section === s.id).map((d) => {
+    settings: SETTINGS.filter((d) => d.section === s.id && usedWith(d, local)).map((d) => {
       const e = effectiveSetting(d.key, overrides);
-      const shared = { key: d.key, label: d.label, type: d.type, help: d.help, default: d.default, source: e.source, advanced: Boolean(d.advanced), required: Boolean(d.required), min: d.min, max: d.max, int: d.int, values: d.values, ...(d.type === 'account' ? { choices: knownAccounts().map((a) => a.name) } : {}) };
+      const shared = { key: d.key, label: d.label, type: d.type, help: d.help, default: defaultWith(d, local), source: e.source, advanced: Boolean(d.advanced), required: Boolean(d.required), min: d.min, max: d.max, int: d.int, values: d.values, ...(d.type === 'account' ? { choices: knownAccounts().map((a) => a.name) } : {}) };
       return d.type === 'secret' ? { ...shared, isSet: e.value !== '' } : { ...shared, value: e.value };
     }),
   }));
-  return { sections, damaged: overrides.damaged, exists: overrides.exists, changedAt: overrides.changedAt, ignored: overrides.ignored, reloadError: reloadStatus.error };
+  const storage = { kind: local ? 'local' : 'nextcloud', hostDir: config.storage.hostDir };
+  return { sections, storage, damaged: overrides.damaged, exists: overrides.exists, changedAt: overrides.changedAt, ignored: overrides.ignored, reloadError: reloadStatus.error };
 }

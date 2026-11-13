@@ -5,7 +5,7 @@ by category. Anything it isn't sure of waits for you in the web app.
 
 ```mermaid
 flowchart TD
-  you(["You add a photo or PDF"]) --> inbox[("Nextcloud<br/>Receipts/Inbox")]
+  you(["You add a photo or PDF"]) --> inbox[("Nextcloud or a local folder<br/>Receipts/Inbox")]
   inbox --> read
 
   subgraph machine["Your machine: the worker and two local models"]
@@ -35,7 +35,7 @@ flowchart TD
 **More:** [The web app](web-app.md) · [Learning from your corrections](learning.md) · [Running it](running.md) (GPU,
 outages, offline) · [Replay tests](testing.md) · [Cloud options](cloud.md) · [Research](research.md)
 
-**What leaves the machine.** Nothing but requests to your own Actual and Nextcloud servers (plus a one-time Actual API download after an Actual upgrade; no receipt data), unless you turn on one of the
+**What leaves the machine.** Nothing but requests to your own Actual and Nextcloud servers (none to Nextcloud with a local folder; plus a one-time Actual API download after an Actual upgrade; no receipt data), unless you turn on one of the
 two optional [cloud options](cloud.md): the cloud reader sends the receipt photo, and the hosted decider sends anonymized
 item text.
 

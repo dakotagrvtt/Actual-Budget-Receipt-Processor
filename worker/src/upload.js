@@ -4,6 +4,7 @@
 import path from 'node:path/posix';
 import crypto from 'node:crypto';
 import { SUPPORTED } from './image.js';
+import { filesPlace } from './config.js';
 import { moveKeepingBoth } from './requeue.js';
 
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -170,7 +171,7 @@ export async function uploadFiles(c, inbox, files) {
       if (got.duplicate) skipped.push(verdict.name);
       else saved.push({ from: label, as: got.as });
     } catch (err) {
-      refused.push({ name: label, why: `Nextcloud would not take it (${err.message})` });
+      refused.push({ name: label, why: `${filesPlace(true)} would not take it (${err.message})` });
     }
   }
   return { saved, skipped, refused };

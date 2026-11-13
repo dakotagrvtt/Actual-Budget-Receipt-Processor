@@ -1,6 +1,6 @@
 // The receipt detail page: the photo, what was read, the bank charge and how it was filed, the actions box, the item
 // category editor with its preview, Previous / Next and the help text.
-import { config } from './config.js';
+import { config, filesPlace } from './config.js';
 import { actualAnchor } from './actual-link.js';
 import { queueRail, archiveRail, queueIdentity, queueGroup } from './panel-queue.js';
 import { REVIEW_CAUSES } from './review-cause.js';
@@ -119,7 +119,7 @@ function archivedToDo(entry) {
     lines: [
       ARCHIVED,
       `It was archived ${when(a.at)}${a.auto ? ' by itself' : ''}${a.reason ? ` (${a.reason})` : ''}; the photo and summary are in ${dirOf(entry.filedAs)}.`,
-      ...(a.fileMissing ? ['The photo was already gone from Nextcloud when it was archived, so only the summary was filed.'] : a.shrunk ? [`The photo was shrunk when it was archived (${a.shrunk.before} to ${a.shrunk.after} bytes).`] : []),
+      ...(a.fileMissing ? [`The photo was already gone from ${filesPlace()} when it was archived, so only the summary was filed.`] : a.shrunk ? [`The photo was shrunk when it was archived (${a.shrunk.before} to ${a.shrunk.after} bytes).`] : []),
     ],
   };
 }
@@ -146,7 +146,7 @@ export function whatToDo(entry, id, summary, fix = null) {
 function whatToDoBase(entry, id, summary, fix) {
   if (entry.archived) return archivedToDo(entry);
   if (entry.creating) return { warn: true, lines: ['An earlier cash creation is being checked. If it exists in Actual, the worker will finish recording it automatically. If it was not created, Preview offers a safe retry.', ...(entry.error ? [entry.error] : [])] };
-  if (entry.filing) return { warn: false, lines: ['The receipt is finishing its Nextcloud save. The worker will retry automatically; the change in Actual will not be repeated.'] };
+  if (entry.filing) return { warn: false, lines: [`The receipt is finishing its save to ${filesPlace()}. The worker will retry automatically; the change in Actual will not be repeated.`] };
   if (entry.fixedOnPage?.summaryFailed) return { warn: true, lines: [entry.error ?? 'The worker is recovering an earlier receipt save. Its transaction in Actual is kept.'] };
   if (entry.resolutionPending) return { warn: true, lines: ['The corrected reading is kept, but saving it did not finish. Open Correct reading / choose transaction below to finish saving. Nothing was changed in Actual.'] };
   if (entry.manualLink?.keep) return { warn: false, lines: [entry.manualLink.recovered ? 'The earlier saved purchase was recovered. Its contents in Actual were kept.' : 'Linked to the charge you chose. Its amounts, categories and notes in Actual were kept.', 'You can archive this receipt. Make any further changes in Actual.'] };
@@ -172,12 +172,12 @@ function whatToDoBase(entry, id, summary, fix) {
   const review = base.endsWith('+review') && !entry.reviewed; // #review removed in Actual: reviewed
   const kind = base.replace(/\+review$/, '');
   if (kind === 'failed' && dry) {
-    return { warn: true, lines: ['It failed 3 times. This is a dry run, so nothing was written to Actual or moved in Nextcloud. The last error is under Why it needs review.', 'Fix the cause (or wait out an outage), then press Try again.'] };
+    return { warn: true, lines: [`It failed 3 times. This is a dry run, so nothing was written to Actual or moved in ${filesPlace()}. The last error is under Why it needs review.`, 'Fix the cause (or wait out an outage), then press Try again.'] };
   }
   if (dry || dryPrefix) {
-    if (kind === 'review') return { warn: false, lines: [`This is a dry run preview: nothing was written to Actual or Nextcloud. Live, it would be sent to ${reviewDir()} with nothing changed (see Why it needs review).`, 'Fix the cause if you can, then go live.'] };
+    if (kind === 'review') return { warn: false, lines: [`This is a dry run preview: nothing was written to Actual or ${filesPlace()}. Live, it would be sent to ${reviewDir()} with nothing changed (see Why it needs review).`, 'Fix the cause if you can, then go live.'] };
     const would = WOULD[kind];
-    return { warn: false, lines: [`This is a dry run preview: nothing was written to Actual or Nextcloud. Live, it would ${would ?? 'be processed'}${review ? `, tag the note #review and file the receipt in ${reviewDir()}` : ''}.`, 'If that looks right, go live: receipts seen in dry run are then processed again, for real.'] };
+    return { warn: false, lines: [`This is a dry run preview: nothing was written to Actual or ${filesPlace()}. Live, it would ${would ?? 'be processed'}${review ? `, tag the note #review and file the receipt in ${reviewDir()}` : ''}.`, 'If that looks right, go live: receipts seen in dry run are then processed again, for real.'] };
   }
   if (kind === 'failed') {
     return entry.applied
@@ -416,8 +416,8 @@ function previewHtml(fix, key, id, nav, summary = null) {
 /** Collapsible help for the page. */
 const how = () => `<details class="how"><summary>How this page works</summary>
 <dl>
-<dt>Upload receipts</dt><dd>At the top of the Inbox list, <b>+ Add receipt</b> sends photos or PDFs you pick on this device straight to the Nextcloud Inbox. It is the same as putting the files in the Inbox yourself: the worker reads them at once and files them like any other receipt.</dd>
-<dt>Photo</dt><dd>The receipt as the worker has it now (a PDF shows up to 3 pages and can be downloaded). It is read from Nextcloud when you open this page.</dd>
+<dt>Upload receipts</dt><dd>At the top of the Inbox list, <b>+ Add receipt</b> sends photos or PDFs you pick on this device straight to the ${filesPlace() === 'Nextcloud' ? 'Nextcloud Inbox' : 'Inbox folder'}. It is the same as putting the files in the Inbox yourself: the worker reads them at once and files them like any other receipt.</dd>
+<dt>Photo</dt><dd>The receipt as the worker has it now (a PDF shows up to 3 pages and can be downloaded). It is read from ${filesPlace()} when you open this page.</dd>
 <dt>What was read</dt><dd>What the reader saw: store, totals and items. <b>Purchase date used</b> is the date the worker settled on for matching: the printed date when it is plausible next to when the photo was taken (the date in a camera-style file name) or uploaded, otherwise none (the receipt is then matched by amount and store only). <b>Printed date</b> is the date text exactly as printed on the receipt, shown below it.</dd>
 <dt>Bank charge</dt><dd>The transaction in Actual this receipt was matched to. It is missing when no charge was found.</dd>
 <dt>Filed as</dt><dd>How the charge was divided across categories, with the amounts.</dd>

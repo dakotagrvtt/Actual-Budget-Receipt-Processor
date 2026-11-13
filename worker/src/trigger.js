@@ -1,3 +1,4 @@
+import { assertStorage } from './storage-state.js';
 // The control panel and webhook for the worker (port 8095). Every request needs TRIGGER_TOKEN; without it set, the server doesn't start.
 //   GET  /?key=TOKEN               status page: mode, "Check now", recent receipts (link it from an Actual note)
 //   GET  /categories, /keywords    edit category descriptions (and exclude categories) and household keywords
@@ -23,7 +24,7 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs/promises';
-import { config, log, reloadStatus } from './config.js';
+import { config, filesPlace, log, reloadStatus } from './config.js';
 import { loadState, parseStateKey } from './state.js';
 import { loadKeywords } from './keywords.js';
 import { learnedData, MemoryError, seenIndex } from './memory.js';
@@ -240,10 +241,11 @@ async function handleUpload(req, res, url, key, onTrigger, deps) {
     const nc = deps.nextcloud ?? (await import('./nextcloud.js'));
     let result;
     try {
+      await assertStorage();
       result = await nc.uploadToInbox(files);
     } catch (err) {
       log(`upload failed: ${err.message}`);
-      return refuse(502, `Nextcloud could not be reached (${err.message}). Nothing was uploaded.`);
+      return refuse(502, `${filesPlace(true)} could not be reached (${err.message}). Nothing was uploaded.`);
     }
     log(`upload from the status page: ${result.saved.length} saved, ${result.refused.length} refused (${result.saved.map((s) => s.as).join(', ')})`);
     if (result.saved.length && url.searchParams.get('defer') !== '1') onTrigger('upload');
@@ -284,6 +286,7 @@ async function handleForm(req, res, url, key, deps = {}, onTrigger = null) {
   let message;
   const out = {};
   try {
+    if (!SETTINGS_BACK.has(url.pathname)) await assertStorage();
     message = await ROUTES[url.pathname](form, out, deps);
   } catch (err) {
     if (!(err instanceof actions.PanelError || err instanceof PrivateWordsError || err instanceof MemoryError)) throw err; // these carry a message for the page
@@ -434,6 +437,14 @@ export function makeServer(onTrigger, deps = {}) {
       const url = new URL(req.url, 'http://localhost');
       const key = keyOf(req, url);
       if (!allowed(key)) return text(res, 403, 'forbidden: this page needs its key in the link (?key=...). Run ./receipts trigger-url in the pipeline folder to print the full link.');
+      // Check before uploads, mutations and file reads, including before the first worker cycle.
+      // Settings saves, resets and their undo stay open: they are how a storage or folder change is put back (never a lock-out).
+      try { if ((req.method === 'POST' && !SETTINGS_BACK.has(url.pathname)) || ['/receipt', '/receipt-photo'].includes(url.pathname)) await assertStorage(); }
+      catch (err) {
+        if (err.code !== 'STORAGE_MIGRATION_REQUIRED') throw err;
+        req.resume();
+        return text(res, 503, err.message);
+      }
       const undo = actions.undoFromQuery(url.searchParams);
       const notice = url.searchParams.get('notice') || (url.searchParams.get('started') ? 'Checking the inbox now. Refresh in a minute to see the results.' : '');
 
@@ -443,6 +454,7 @@ export function makeServer(onTrigger, deps = {}) {
       if (req.method === 'GET' && (await handlePage(res, url, key, notice, undo, deps))) return;
       text(res, 404, 'not found');
     } catch (err) {
+      if (err.code === 'STORAGE_MIGRATION_REQUIRED') return text(res, 503, err.message);
       text(res, 500, 'error');
       log(`trigger page error: ${err.message}`);
     }

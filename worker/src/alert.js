@@ -6,6 +6,7 @@ import { config, log } from './config.js';
 import { writePrivate } from './private-files.js';
 
 let last = '';
+let lastKind = null; // 'cycle': raised by a check that failed as a whole, so the next check that goes through clears it
 let touched = false; // reported during the cycle in progress
 let fileEnabled = false; // only the long-running worker owns the banner file; replay and item-test only log
 
@@ -21,11 +22,15 @@ const sentence = (msg) => msg.charAt(0).toUpperCase() + msg.slice(1);
  * Say it in the log and on the status page, unless it is the same problem as last time. Returns true if it was new.
  * pausing: false for a notice that does not stop the worker (items refused, receipts go on).
  */
-export async function reportSetupProblem(err, { pausing = true } = {}) {
+export async function reportSetupProblem(err, { pausing = true, kind = null } = {}) {
   touched = true;
   const message = sentence(String(err.message));
-  if (message === last) return false;
+  if (message === last) {
+    if (kind) lastKind = kind; // the same problem, now known to stop the checks: a passing check clears it
+    return false;
+  }
   last = message;
+  lastKind = kind;
   log(pausing ? `  setup problem: ${message}; stopping this check. Receipts wait and no attempt is counted; the next poll tries again` : `  notice: ${message}`);
   if (!fileEnabled) return true;
   try {
@@ -45,9 +50,15 @@ export async function clearSetupProblemIfQuiet() {
   await clearSetupProblem();
 }
 
+/** A check went through: clear the banner a failed check raised (kind 'cycle'), not one about a receipt's setup. */
+export async function clearCycleProblem() {
+  if (lastKind === 'cycle') await clearSetupProblem();
+}
+
 /** The problem is gone (or the worker just started): remove the banner. */
 export async function clearSetupProblem() {
   last = '';
+  lastKind = null;
   if (!fileEnabled) return;
   await fs.rm(config.alertPath, { force: true }).catch(() => {});
 }

@@ -1,7 +1,7 @@
 // A persisted destination and source version make MOVE and summary PUT safe to resume after lost responses.
 import path from 'node:path/posix';
 import crypto from 'node:crypto';
-import { NO_OVERWRITE, ifMatch } from './requeue.js';
+import { NO_OVERWRITE, ifMatch, isExists } from './requeue.js';
 const missing = (err) => err?.status === 404;
 const statOrNull = async (c, p) => { try { return await c.stat(p); } catch (err) { if (missing(err)) return null; throw err; } };
 const same = (a, b) => a && b && String(a).replace(/^W\//, '').replaceAll('"', '') === String(b).replace(/^W\//, '').replaceAll('"', '');
@@ -13,9 +13,11 @@ export async function resumeTransfer(c, intent, checkpoint) {
   if (!intent.to) {
     if (!source || (intent.etag && !same(source.etag, intent.etag))) {
       // Older finishing entries did not record their destination. Adopt only one matching file version.
-      const files = await c.getDirectoryContents(path.dirname(intent.dest));
       const name = path.basename(intent.from);
-      const candidates = files.filter((f) => f.type === 'file' && (f.basename === name || f.basename.endsWith(`-${name}`)) && same(f.etag, intent.etag));
+      const named = (n) => n === name || n.endsWith(`-${name}`);
+      // A local folder works out the version of the named files only (the others are never read); Nextcloud lists as before.
+      const files = await c.getDirectoryContents(path.dirname(intent.dest), { etags: named });
+      const candidates = files.filter((f) => f.type === 'file' && named(f.basename) && same(f.etag, intent.etag));
       if (candidates.length !== 1) throw new Error('The moved receipt could not be identified safely; its filing record was kept');
       intent.to = candidates[0].filename;
     } else {
@@ -23,7 +25,7 @@ export async function resumeTransfer(c, intent, checkpoint) {
       intent.etag = source.etag;
       intent.to = intent.from === intent.dest || !(await taken(c, intent.dest)) ? intent.dest : unique(intent.dest);
     }
-    if (!intent.etag) throw new Error('Nextcloud did not return the receipt version');
+    if (!intent.etag) throw new Error('The file storage did not return the receipt version');
     await checkpoint(structuredClone(intent)); // destination is durable BEFORE the MOVE
   }
   const alreadyMoved = intent.to !== intent.from && same((await statOrNull(c, intent.to))?.etag, intent.etag);
@@ -36,6 +38,15 @@ export async function resumeTransfer(c, intent, checkpoint) {
     }
     await c.moveFile(intent.from, intent.to, { ...NO_OVERWRITE, headers: { ...NO_OVERWRITE.headers, ...ifMatch(intent.etag) } });
     moved = true;
+  } else if (alreadyMoved && source && same(source.etag, intent.etag)) {
+    // The same version at both names: a local folder's move (link, then unlink) stopped in between. Moving again only drops the old name
+    // (local-files.js). A WebDAV move never leaves both, but should a server ever answer so, the old name is kept as it was.
+    try {
+      await c.moveFile(intent.from, intent.to, { ...NO_OVERWRITE, headers: { ...NO_OVERWRITE.headers, ...ifMatch(intent.etag) } });
+      moved = true;
+    } catch (err) {
+      if (!isExists(err)) throw err;
+    }
   }
   const destination = await statOrNull(c, intent.to);
   if (!destination || !same(destination.etag, intent.etag)) throw new Error('The filed receipt version could not be verified');

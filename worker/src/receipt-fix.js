@@ -15,7 +15,7 @@ import { filePageSummary } from './filing.js';
 import { selectionSnapshot } from './receipt-selection.js';
 import crypto from 'node:crypto';
 import path from 'node:path/posix';
-import { config, inMatchAccounts, log } from './config.js';
+import { config, filesPlace, inMatchAccounts, log } from './config.js';
 import { allocate, cashPurchase, cents, fixTaxGap, gapSummary, ITEMS_NOTE_MAX, mergeParts, money, partKey, partNote, shortName, SPLIT_NOTE_MAX, UNCATEGORIZED } from './reconcile.js';
 import { knownCategories } from './known-categories.js';
 import { receiptLabels } from './category-notes.js';
@@ -72,7 +72,7 @@ export const actualChanged = (entry, seen) => Boolean(entry?.changedByHand || en
 export function classify(id, entry, summary) {
   const dry = parseStateKey(id).dry;
   if (entry?.archived) return no(ARCHIVED);
-  if (entry?.filing) return no('The receipt is finishing its Nextcloud save. It will retry automatically.');
+  if (entry?.filing) return no(`The receipt is finishing its save to ${filesPlace()}. It will retry automatically.`);
   if (entry?.resolutionPending) return no('Finish saving the corrected reading under Correct reading / choose transaction before applying it.');
   if (entry?.manualLink?.keep) return no('This receipt is linked to an existing charge. Its amounts and categories were kept. Edit that charge in Actual.');
   if (!entry?.done) return no('The receipt is not finished yet, so there is nothing to fix.');
@@ -649,7 +649,7 @@ export async function loadEntry(id, deps) {
   let entry = state[id];
   if (entry?.filing) {
     try { await (await import('./filing.js')).finishPageFiling(id, entry, deps.nextcloud ?? await import('./nextcloud.js')); entry = (await loadState())[id]; }
-    catch (err) { throw new PanelError(`The receipt is still finishing its Nextcloud save (${err.message}). It will retry automatically. Nothing was changed in Actual.`); }
+    catch (err) { throw new PanelError(`The receipt is still finishing its save to ${filesPlace()} (${err.message}). It will retry automatically. Nothing was changed in Actual.`); }
   }
   let summary = null;
   if (entry.filedAs) {
@@ -865,7 +865,7 @@ async function clearTagNow({ actual, id, entry, summary, deps }) {
     } catch (err) {
       if (err.movedTo && err.movedTo !== entry.filedAs) await patchEntry(id, (e) => ({ ...e, filedAs: err.movedTo }));
       await patchEntry(id, (e) => ({ ...e, fixedOnPage: { ...e.fixedOnPage, summaryFailed: true } }));
-      fileNote = ` The file or its summary could not be ${err.movedTo ? 'rewritten' : 'moved'} in Nextcloud (${err.message}); ${err.movedTo ? 'the file was moved, its summary still shows the old plan' : 'it stays where it was'}.`;
+      fileNote = ` The file or its summary could not be ${err.movedTo ? 'rewritten' : 'moved'} in ${filesPlace()} (${err.message}); ${err.movedTo ? 'the file was moved, its summary still shows the old plan' : 'it stays where it was'}.`;
       log(`receipt page: ${file}: ${err.message}`);
     }
     return `Marked ${file} as checked${hadReview ? ' (#review removed)' : ''}.${fileNote}`;
@@ -945,7 +945,7 @@ async function writeToActual({ actual, form, out, id, entry, summary, edits, kin
       // The file may have moved even though its summary could not be written (err.movedTo).
       if (err.movedTo && err.movedTo !== entry.filedAs) await patchEntry(id, (e) => ({ ...e, filedAs: err.movedTo }));
       await patchEntry(id, (e) => ({ ...e, fixedOnPage: { ...e.fixedOnPage, summaryFailed: true } }));
-      fileNote = ` Actual was updated, but the file or its summary could not be ${err.movedTo ? 'rewritten' : 'moved'} in Nextcloud (${err.message}); ${err.movedTo ? 'the file was moved, its summary still shows the old plan' : 'it stays where it was'}.`;
+      fileNote = ` Actual was updated, but the file or its summary could not be ${err.movedTo ? 'rewritten' : 'moved'} in ${filesPlace()} (${err.message}); ${err.movedTo ? 'the file was moved, its summary still shows the old plan' : 'it stays where it was'}.`;
       log(`receipt page: ${file}: ${err.message}`);
     }
 
@@ -1168,7 +1168,7 @@ async function restoreRecords({ id, entry, summary, fix, was, deps }) {
     where = await filePageSummary(id, entry, fix.before.filedAs, back, nc);
   } catch (err) {
     where = err.movedTo ?? entry.filedAs;
-    fileNote = ` The file or its summary could not be put back in Nextcloud (${err.message}); the file is in ${path.dirname(where)}.`;
+    fileNote = ` The file or its summary could not be put back in ${filesPlace()} (${err.message}); the file is in ${path.dirname(where)}.`;
   }
   await patchEntry(id, (e) => {
     const { fixedOnPage: _gone, applied: _applied, creating: _creating, manualLink: _linked, ...rest } = e;

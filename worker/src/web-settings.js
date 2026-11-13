@@ -2,10 +2,10 @@
 // now and where that comes from, check a change by building a trial config, and write changes atomically.
 // The worker itself picks the file up at the start of each check (reloadConfig in config.js).
 import fs from 'node:fs/promises';
-import { config, buildConfig, extendedDaysProblem } from './config.js';
+import { config, buildConfig, extendedDaysProblem, localStorageIn } from './config.js';
 import { withLock, writeJsonAtomic } from './file-lock.js';
 import { readOverrides } from './web-overrides.js';
-import { SETTINGS_BY_KEY, SettingError, normalizeValue } from './web-settings-schema.js';
+import { SETTINGS_BY_KEY, SettingError, defaultWith, normalizeValue } from './web-settings-schema.js';
 
 /** The damaged-file refusal: nothing is written until the file is reset. */
 export class DamagedSettingsError extends Error {}
@@ -22,7 +22,7 @@ export function effectiveSetting(key, overrides = loadOverrides()) {
   const def = SETTINGS_BY_KEY.get(key);
   if (Object.hasOwn(overrides.values, key)) return { value: overrides.values[key], source: 'page' };
   if (process.env[key] !== undefined) return { value: process.env[key], source: 'env' };
-  return { value: def.default, source: 'default' };
+  return { value: defaultWith(def, localStorageIn(process.env)), source: 'default' }; // STORAGE is .env-only, so process.env says
 }
 
 /** A list setting's current items (EXCLUDE_CATEGORY_GROUPS ...), parsed the way config.js parses it. */

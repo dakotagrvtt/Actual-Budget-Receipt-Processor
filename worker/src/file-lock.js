@@ -17,9 +17,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * Run fn under an O_EXCL lock file at `lock`. Retries for `waitMs` (default 5 s); a lock older than `staleMs`
  * (default 30 s) is stale and taken over. The lock file holds a random token, and only its owner removes it,
- * so a slow holder whose lock was taken over can't delete the new owner's lock.
+ * so a slow holder whose lock was taken over can't delete the new owner's lock. heartbeatMs: touch the lock that often while fn
+ * runs, so a long holder (a storage migration) is never taken for stale while it is alive.
  */
-export async function withLock(lock, fn, { waitMs = 5000, staleMs = 30000 } = {}) {
+export async function withLock(lock, fn, { waitMs = 5000, staleMs = 30000, heartbeatMs = 0 } = {}) {
   await mkdirPrivate(path.dirname(lock));
   const token = crypto.randomUUID();
   const t0 = Date.now();
@@ -41,9 +42,12 @@ export async function withLock(lock, fn, { waitMs = 5000, staleMs = 30000 } = {}
       }
     }
   }
+  const beat = heartbeatMs > 0 ? setInterval(() => { const t = new Date(); fs.utimes(lock, t, t).catch(() => {}); }, heartbeatMs) : null;
+  beat?.unref();
   try {
     return await fn();
   } finally {
+    if (beat) clearInterval(beat);
     // Only remove the lock if it is still ours.
     if ((await fs.readFile(lock, 'utf8').catch(() => null)) === token) await fs.unlink(lock).catch(() => {});
   }

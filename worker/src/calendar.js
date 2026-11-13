@@ -114,7 +114,11 @@ export async function occasionDetails(dateIso) {
   const start = new Date(day - o.daysAfter * DAY);
   const end = new Date(day + (o.daysBefore + 1) * DAY);
   let found = [start.getUTCFullYear(), end.getUTCFullYear()].filter((y, i, a) => a.indexOf(y) === i).flatMap(usHolidays);
-  if (o.useCalendar) {
+  // The calendar is Nextcloud's: with the receipts in a local folder there are no Nextcloud details to read it with.
+  if (o.useCalendar && config.storage.kind === 'local') {
+    if (!warned) log('  OCCASIONS_CALENDAR needs Nextcloud storage (STORAGE=local); using US holidays only');
+    warned = true;
+  } else if (o.useCalendar) {
     try {
       found = found.concat(await calendarEvents(start, end));
     } catch (err) {

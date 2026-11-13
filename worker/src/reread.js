@@ -16,7 +16,7 @@
 // (the picks and amounts are numbered by item), when the charge was changed in Actual (the editor is locked), when the receipt
 // is archived, and when the photo is gone. Everything here runs under the session lock (the check holds it; the POST takes it).
 // Every change of the reading gives the summary a new `reread.at`: the page's reading id, which makes earlier previews stale.
-import { config, log } from './config.js';
+import { config, filesPlace, log } from './config.js';
 import { parseStateKey, patchEntry } from './state.js';
 import { exclusive } from './session-lock.js';
 import { PanelError, retryStatus, UNDO_WINDOW_MS } from './panel-actions.js';
@@ -33,7 +33,7 @@ const MAX_TRIES = 3; // failed readings of one filed receipt before the request 
 export const OUTAGE_HOURS = 24; // a request that keeps meeting an outage is dropped after this long
 export const NOTE_HOURS = 24; // "Read again was not done" stays on the page this long
 export const READING_AGAIN = 'Reading again… The worker is reading the photo once more. Reload this page in a minute or two.';
-const NO_PHOTO = 'The photo is no longer in Nextcloud, so it can\'t be read again.';
+const noPhoto = () => `The photo is no longer in ${filesPlace()}, so it can't be read again.`;
 const UNDO_FIRST = 'A change from this page is saved for this receipt. Undo it first (the Undo button works for 15 minutes after saving), or change the charge in Actual.';
 const FIX_FINAL = 'A change from this page was saved for this receipt, and it can no longer be undone here. Its items are numbered for the current reading, so the reading is not replaced. Change the charge in Actual if it needs more.';
 const LOCKED = 'The charge was changed in Actual, so this page shows what Actual has and the reading is not replaced. Edit it in Actual.';
@@ -129,8 +129,8 @@ async function requestNow(id, out, deps) {
     if (!file) throw Object.assign(new Error('no file'), { status: 404 });
     await nc.statPath(file);
   } catch (err) {
-    if (err.status === 404) throw new PanelError(`${NO_PHOTO} Nothing was changed.`);
-    throw new PanelError(`Nextcloud can't be reached right now (${err.message}). Nothing was changed.`);
+    if (err.status === 404) throw new PanelError(`${noPhoto()} Nothing was changed.`);
+    throw new PanelError(`${filesPlace(true)} can't be reached right now (${err.message}). Nothing was changed.`);
   }
   // (Read again is allowed only before any real page save, or after a "Looks right", which has no Undo: there is no Undo to end here.)
   await patchEntry(id, (e) => {
@@ -185,7 +185,7 @@ async function restoreNow(id, deps) {
     try {
       await nc.refile(entry.filedAs, entry.filedAs, back);
     } catch (err) {
-      throw new PanelError(`The summary could not be rewritten in Nextcloud (${err.message}). Nothing was changed.`);
+      throw new PanelError(`The summary could not be rewritten in ${filesPlace()} (${err.message}). Nothing was changed.`);
     }
     await patchEntry(id, (e) => ({ ...e, card: cardOf(back), rereadAt: at }));
   }
@@ -211,7 +211,7 @@ export function dropStaleRereads(state, inboxKeys) {
     if (!e?.reread) continue;
     if (parseStateKey(k).dry !== config.dryRun) state[k] = noted(e, MODE_CHANGED);
     else if (inboxKeys.has(k) || filedRereads({ [k]: e }).length) continue;
-    else state[k] = noted(e, NO_PHOTO);
+    else state[k] = noted(e, noPhoto());
     changed = true;
   }
   return changed;
@@ -259,7 +259,7 @@ export async function rereadFiled(key, state, { labels, ctx }, deps = {}) {
     try {
       bytes = await nc.downloadPath(entry.filedAs);
     } catch (err) {
-      if (err.status === 404) return giveUp(state, key, NO_PHOTO);
+      if (err.status === 404) return giveUp(state, key, noPhoto());
       throw err;
     }
     try {

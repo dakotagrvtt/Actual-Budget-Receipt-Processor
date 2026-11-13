@@ -428,9 +428,9 @@ test('Nextcloud: the inbox is listed with a client of its own made from the cand
   const listed = [];
   settings.testDeps.createClientFn = (url, opts) => {
     made.push([url, opts]);
-    return { getDirectoryContents: async (folder) => (listed.push(folder), []) };
+    return { getDirectoryContents: async (folder, options) => { assert.equal(options.etags, false); assert.ok(options.signal); listed.push(folder); return []; } };
   };
-  assert.match(await settings.saveSettings(form({ NEXTCLOUD_URL: 'https://cloud.example.org', NEXTCLOUD_USER: 'ann', NEXTCLOUD_APP_PASSWORD: NEWPW, RECEIPTS_INBOX: '/Scans' }), {}), /^Saved/);
+  assert.match(await settings.saveSettings(form({ NEXTCLOUD_URL: 'https://cloud.example.org', NEXTCLOUD_USER: 'ann', NEXTCLOUD_APP_PASSWORD: NEWPW, RECEIPTS_INBOX: '/Scans', 'storage-change': 'yes' }), {}), /^Saved/);
   assert.deepEqual(made, [['https://cloud.example.org/remote.php/dav/files/ann', { username: 'ann', password: NEWPW }]]);
   assert.deepEqual(listed, ['/Scans']);
   fs.rmSync(file);
@@ -442,7 +442,7 @@ test('Nextcloud: the inbox is listed with a client of its own made from the cand
   settings.testDeps.createClientFn = () => ({ getDirectoryContents: async () => { throw new Error(`getaddrinfo ENOTFOUND ${NEWPW}`); } });
   await assert.rejects(settings.saveSettings(form({ NEXTCLOUD_URL: 'https://gone.example.org', NEXTCLOUD_APP_PASSWORD: NEWPW }), {}), (e) => /Couldn't reach Nextcloud/.test(e.message) && !e.message.includes(NEWPW));
   assert.equal(fs.existsSync(file), false);
-  assert.match(await settings.saveSettings(form({ RECEIPTS_INBOX: '/Nope', anyway: 'yes' }), {}), /^Saved/);
+  assert.match(await settings.saveSettings(form({ RECEIPTS_INBOX: '/Nope', anyway: 'yes', 'storage-change': 'yes' }), {}), /^Saved/);
 });
 
 test('the sync ID is checked for its form only; other settings and the processed/review folders run no connection test', async () => {
@@ -450,7 +450,7 @@ test('the sync ID is checked for its form only; other settings and the processed
   settings.testDeps.fetchFn = async () => (network++, okLogin());
   settings.testDeps.createClientFn = () => (network++, { getDirectoryContents: async () => [] });
   await assert.rejects(settings.saveSettings(form({ ACTUAL_SYNC_ID: 'nonsense' }), {}), /looks like/);
-  await settings.saveSettings(form({ ACTUAL_SYNC_ID: '1a2b3c4d-1234-5678-9abc-def012345678', MATCH_DAYS: '5', RECEIPTS_PROCESSED: '/Done', RECEIPTS_REVIEW: '/Look' }), {});
+  await settings.saveSettings(form({ ACTUAL_SYNC_ID: '1a2b3c4d-1234-5678-9abc-def012345678', MATCH_DAYS: '5', RECEIPTS_PROCESSED: '/Done', RECEIPTS_REVIEW: '/Look', 'storage-change': 'yes' }), {});
   assert.equal(network, 0);
   assert.equal(readFile().values.ACTUAL_SYNC_ID, '1a2b3c4d-1234-5678-9abc-def012345678');
 });
@@ -842,7 +842,7 @@ test('a new address needs its password typed in the same request; nothing is sen
   // allowed: typed together, and the same password retyped
   assert.match(await settings.saveSettings(form({ ACTUAL_SERVER_URL: 'https://good.example', ACTUAL_PASSWORD: 'test' }), {}), /^Saved/);
   assert.equal(readFile().values.ACTUAL_PASSWORD, 'test', 'retyping the .env password is accepted and saved with the address');
-  assert.match(await settings.saveSettings(form({ NEXTCLOUD_URL: 'https://nc.example', NEXTCLOUD_APP_PASSWORD: NEWPW }), {}), /^Saved/);
+  assert.match(await settings.saveSettings(form({ NEXTCLOUD_URL: 'https://nc.example', NEXTCLOUD_APP_PASSWORD: NEWPW, 'storage-change': 'yes' }), {}), /^Saved/);
 });
 
 test('with an optional encryption password set, it must be retyped with a new address too', async () => {
@@ -1104,4 +1104,32 @@ test('the script: Settings open as pages (no Settings dialog), Done goes back to
   // The dialog stays for the rule form and the cash fallback only.
   assert.match(WORKSPACE_SCRIPT, /openDialog\('Make a category rule'/);
   assert.match(WORKSPACE_SCRIPT, /openDialog\('Create a cash purchase\?'/);
+});
+
+test('STORAGE=local: Connections shows the local folder, no Nextcloud fields, local folder defaults, and a posted Nextcloud field is ignored', async () => {
+  const { settingsPage } = await import('../src/panel-pages.js');
+  const before = process.env.STORAGE;
+  process.env.STORAGE = 'local';
+  try {
+    const data = settings.settingsData();
+    const keys = data.sections.flatMap((s) => s.settings).map((s) => s.key);
+    assert.equal(data.storage.kind, 'local');
+    assert.ok(!keys.some((k) => k.startsWith('NEXTCLOUD_')), 'no Nextcloud rows');
+    const inbox = data.sections.flatMap((s) => s.settings).find((s) => s.key === 'RECEIPTS_INBOX');
+    if (process.env.RECEIPTS_INBOX === undefined) assert.equal(inbox.value, '/Inbox');
+    assert.equal(inbox.default, '/Inbox');
+    const html = settingsPage(data, 'secret', '', undefined, { section: 'connections' });
+    assert.match(html, /<legend>Receipt storage<\/legend><p class="small">A folder on this computer/);
+    assert.doesNotMatch(html, /<legend>Nextcloud<\/legend>|NEXTCLOUD_/);
+    const overview = settingsPage(data, 'secret');
+    assert.match(overview, /Actual and the receipt folders\./);
+    assert.doesNotMatch(overview, /A required connection setting is missing/);
+    assert.equal(await settings.saveSettings(form({ NEXTCLOUD_URL: 'https://other.example.org' }), {}), 'Nothing was different, so nothing was saved.');
+  } finally {
+    if (before === undefined) delete process.env.STORAGE;
+    else process.env.STORAGE = before;
+  }
+  const html = settingsPage(settings.settingsData(), 'secret', '', undefined, { section: 'connections' });
+  assert.match(html, /<legend>Receipt storage<\/legend><p class="small">Nextcloud/);
+  assert.match(html, /<legend>Nextcloud<\/legend>/);
 });

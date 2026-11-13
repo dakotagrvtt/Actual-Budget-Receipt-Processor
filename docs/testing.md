@@ -12,7 +12,7 @@ How to check the pipeline against purchases you've already filed, without changi
 
 ## Run a replay
 
-Upload receipts to a Nextcloud folder such as `/Receipts/Test` and run `./receipts replay --nextcloud "/Receipts/Test"` (or `./receipts replay /data/receipt.jpg` for one file in `./data`).
+Upload receipts to a Nextcloud folder such as `/Receipts/Test` (with a local receipt folder: a folder inside it) and run `./receipts replay --nextcloud "/Receipts/Test"` (or `./receipts replay /data/receipt.jpg` for one file in `./data`).
 
 - `--only 212537,212930` keeps only files whose names contain those.
 - Readings are saved to `data/research/readings/`, replacing ones of the same name; `--save-readings <folder>` writes them elsewhere.

@@ -3,7 +3,7 @@
 // deps (tests pass stand-ins): nextcloud { statPath, downloadPath, readSummary }, prepare (image.js prepareImages).
 import { resolutionPreview } from './receipt-resolution.js';
 import path from 'node:path/posix';
-import { config } from './config.js';
+import { config, filesPlace } from './config.js';
 import { trimSlashes } from './folders.js';
 import { loadState, parseStateKey } from './state.js';
 import { seenIndex } from './memory.js';
@@ -129,12 +129,12 @@ const SAFE = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
 const text = (code, msg) => ({ code, headers: { ...SAFE, 'Content-Type': 'text/plain; charset=utf-8' }, body: `${msg}\n` });
 const NOT_FOUND = 'No such receipt here (it may have been removed from the list).';
 const WHY = {
-  NotThere: 'The file is no longer in Nextcloud (it may have been moved or deleted by hand).',
+  get NotThere() { return `The file is no longer in ${filesPlace()} (it may have been moved or deleted by hand).`; },
   TooBig: 'That file is too large to show here.',
   Busy: 'The panel is busy with other photos. Try again in a moment.',
   Unreadable: 'The photo could not be turned into a picture.',
 };
-const why = (err) => WHY[err?.constructor?.name] ?? (gone(err) ? WHY.NotThere : 'Nextcloud can\'t be reached right now. Try again in a minute.');
+const why = (err) => WHY[err?.constructor?.name] ?? (gone(err) ? WHY.NotThere : `${filesPlace(true)} can't be reached right now. Try again in a minute.`);
 const codeOf = (err) => (gone(err) ? 404 : err instanceof TooBig ? 413 : err instanceof Busy ? 503 : err instanceof Unreadable ? 500 : 503);
 
 /** GET /receipt-photo: { code, headers, body }. page is 1-based; raw=true sends the original PDF (as a download) instead of a picture. */
@@ -179,7 +179,7 @@ export async function receiptView(id, deps = {}, query = null) {
     try {
       view.summary = await d.nextcloud.readSummary(entry.filedAs);
     } catch {
-      view.summaryNote = 'Couldn\'t load the summary (Nextcloud unreachable).';
+      view.summaryNote = `Couldn't load the summary (${filesPlace()} unreachable).`;
     }
   }
   // In dry run nothing is filed; the worker keeps a slim copy of the summary beside its state file.

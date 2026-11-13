@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { config } from '../src/config.js';
+import { writeRecord, storageFile, storageIdentity } from '../src/storage-state.js';
 import { resumeTransfer } from '../src/filing-transfer.js';
 import { timedDavClient } from '../src/dav-timeout.js';
 import { isOutage } from '../src/errors.js';
@@ -38,6 +39,7 @@ beforeEach(async () => {
   config.statePath = path.join(dir, 'state.json'); config.settingsPath = path.join(dir, 'settings.json'); config.dryRun = false; config.envDryRun = false;
   config.nextcloud.url = `https://synthetic.invalid/${++serial}`;
   c = dav(); globalThis.__receiptTestDav = () => c;
+  await writeRecord(storageFile('storage.json'), storageIdentity());
   await saveState({});
 });
 const decision = { result: 'categorize', summary, folder: '/Receipts/Processed', applied: { txnId: 'synthetic-txn', action: 'categorize', at: '2026-11-01' } };

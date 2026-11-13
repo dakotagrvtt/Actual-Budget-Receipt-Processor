@@ -1,0 +1,13 @@
+# The receipts in a folder on this computer instead of Nextcloud (STORAGE=local in .env). ./receipts setup adds this file
+# to COMPOSE_FILE when you choose it. By hand: create the folder first (with Inbox, Processed, Needs review and Archive in it;
+# a missing folder would be created by Docker, owned by root), set RECEIPTS_UID and RECEIPTS_GID in .env to your `id -u` and
+# `id -g`, then
+#   docker compose -f compose.yaml -f compose.local-files.yaml up -d
+# The folder is RECEIPTS_DIR (default ./receipt-files); start a relative path with ./ (a bare name is a Docker volume, not a
+# folder). The worker runs as you (RECEIPTS_UID:RECEIPTS_GID), so the folder stays yours and private (0700), and ./data too.
+# The folder needs a file system with hard links (any normal Linux one): files are moved with link and unlink, so a
+# move never replaces a file that is already there.
+services:
+  worker:
+    volumes:
+      - ${RECEIPTS_DIR:-./receipt-files}:/receipts

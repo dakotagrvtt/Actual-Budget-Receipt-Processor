@@ -1,9 +1,12 @@
 // Tries new Connections settings before the Settings tab saves them, with a separate client of their own so the worker's
-// own connections are never disturbed. Nextcloud: list the inbox over WebDAV. Actual: log in over HTTP the way the server's
+// own connections are never disturbed. Nextcloud: list the inbox over WebDAV (with STORAGE=local: the inbox folder must exist and be writable). Actual: log in over HTTP the way the server's
 // login endpoint works (POST <server>/account/login with {loginMethod:'password', password}, answered {status:'ok', data:{token}}; then /account/logout); the @actual-app/api
 // init is a process-wide singleton the running check may be using, so it is not called here. Messages never contain a password.
 
+import path from 'node:path';
+
 // The webdav package is loaded only when a Nextcloud test runs (the tests of the pages never need it).
+
 const TEST_TIMEOUT_MS = 15000;
 const LOGOUT_TIMEOUT_MS = 3000;
 export class ConnectionTestError extends Error {}
@@ -60,12 +63,22 @@ async function testNextcloud({ url, user, password, inbox }, { createClientFn } 
   try {
     const make = createClientFn ?? (await import('webdav')).createClient;
     const client = make(`${url}/remote.php/dav/files/${encodeURIComponent(user)}`, { username: user, password });
-    await client.getDirectoryContents(inbox, { signal: AbortSignal.timeout(TEST_TIMEOUT_MS) });
+    await client.getDirectoryContents(inbox, { etags: false, signal: AbortSignal.timeout(TEST_TIMEOUT_MS) });
   } catch (err) {
     if (err?.status === 401) throw new ConnectionTestError('Nextcloud refused that user name or app password.');
     if (err?.status === 404) throw new ConnectionTestError(`Nextcloud answered, but there is no folder ${inbox} for ${user} (or the address is not a Nextcloud).`);
     if (err?.status) throw new ConnectionTestError(`Nextcloud answered HTTP ${err.status} when listing ${inbox}.`);
     throw new ConnectionTestError(`Couldn't reach Nextcloud at ${url} (${without(why(err), password)}).`);
+  }
+}
+
+/** With STORAGE=local: the candidate inbox is a folder under the receipt folder that the worker can write in. Throws ConnectionTestError. */
+async function testLocalInbox({ root, inbox }) {
+  try {
+    const { checkWritable } = await import('./local-files.js');
+    await checkWritable(path.join(root, ...String(inbox).split('/').filter((x) => x && x !== '.' && x !== '..')));
+  } catch (err) {
+    throw new ConnectionTestError(`The receipt folder is not ready: ${err.message}.`);
   }
 }
 
@@ -78,7 +91,10 @@ export async function testChanged(changedKeys, candidate, deps = {}) {
   if (changedKeys.some((k) => ACTUAL_KEYS.includes(k))) {
     await testActual(candidate.actual, deps).catch((e) => problems.push(e instanceof ConnectionTestError ? e.message : `Actual: ${without(e.message, candidate.actual.password)}`));
   }
-  if (changedKeys.some((k) => NEXTCLOUD_KEYS.includes(k))) {
+  if (candidate.storage?.kind === 'local') {
+    // No Nextcloud to reach: only the inbox folder itself can be wrong.
+    if (changedKeys.includes('RECEIPTS_INBOX')) await testLocalInbox({ root: candidate.storage.root, inbox: candidate.nextcloud.inbox }).catch((e) => problems.push(e.message));
+  } else if (changedKeys.some((k) => NEXTCLOUD_KEYS.includes(k))) {
     await testNextcloud(candidate.nextcloud, deps).catch((e) => problems.push(e instanceof ConnectionTestError ? e.message : `Nextcloud: ${without(e.message, candidate.nextcloud.password)}`));
   }
   if (problems.length) throw new ConnectionTestError(problems.join(' '));

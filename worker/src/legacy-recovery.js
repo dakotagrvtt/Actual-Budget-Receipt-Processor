@@ -34,7 +34,7 @@ export async function recoverLegacyRecords(state, { actual, nextcloud: nc }) {
         if (err.status !== 404) throw err;
         const etag = id.slice(id.lastIndexOf('@') + 1).replaceAll('"', '');
         const name = path.basename(from);
-        const listed = (await Promise.all([config.nextcloud.processed, config.nextcloud.review].map((folder) => nc.listFolder(folder)))).flat();
+        const listed = (await Promise.all([config.nextcloud.processed, config.nextcloud.review].map((folder) => nc.listFolder(folder, { names: (n) => n === name || n.endsWith(`-${name}`) })))).flat();
         const matching = listed.filter((f) => (f.basename === name || f.basename.endsWith(`-${name}`)) && String(f.etag).replaceAll('"', '') === etag);
         if (matching.length !== 1) throw new Error('The earlier photo location could not be identified safely. Its records were kept.');
         from = matching[0].filename;

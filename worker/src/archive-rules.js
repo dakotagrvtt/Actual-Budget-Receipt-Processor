@@ -1,6 +1,6 @@
 // What may be archived, and what an archived entry keeps. Pure: no Nextcloud, no Actual. Shared by the status page (which
 // buttons to show), the page's archive handlers and the worker's automatic archiving.
-import { config } from './config.js';
+import { config, filesPlace } from './config.js';
 import { parseStateKey } from './state.js';
 import { inFolder } from './folders.js';
 import { statusKind } from './status-kind.js';
@@ -35,7 +35,7 @@ export function canArchive(key, entry, { mode = 'single', now = Date.now(), noCh
   if (entry.archived) return no('It is already archived.', true);
   if (entry.filing) return no('The receipt is finishing a saved operation. It will retry automatically.');
   if (entry.creating) return no('Preview to finish the earlier cash creation or retry it safely after lookup. No second purchase is created automatically.');
-  if (entry.fixedOnPage?.summaryFailed) return no('The summary of its last change from this page could not be saved to Nextcloud, so it is kept as it is. The worker will try to recover it automatically.');
+  if (entry.fixedOnPage?.summaryFailed) return no(`The summary of its last change from this page could not be saved to ${filesPlace()}, so it is kept as it is. The worker will try to recover it automatically.`);
   if (dismiss && mode !== 'single') return no('Dismissing a receipt is only available one at a time.');
   if (dismiss && String(entry.result ?? '').startsWith('dry-run:')) return no('Nothing is moved in dry run.', true);
   if (dismiss && entry.reread) return no('The receipt is waiting to be read again. Let that finish before archiving it.');

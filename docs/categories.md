@@ -104,7 +104,7 @@ Changes apply at the next receipt. A keyword you remove isn't brought back by a 
 | `RECEIPT_CHECK` | `true` | Whole-purchase question |
 | `RECEIPT_CHECK_MIN_CONFIDENCE` | `0.5` | Bar for that answer |
 | `GIFT_MEAL_MIN` | `50` | Restaurant charges over this many dollars are reviewed |
-| `OCCASIONS_CALENDAR` | `false` | Also read birthdays from Nextcloud calendars |
+| `OCCASIONS_CALENDAR` | `false` | Also read birthdays from Nextcloud calendars (Nextcloud storage only) |
 | `STRIP_DEPARTMENT_PREFIXES` | `true` | Remove codes like `MED-` from item names |
 | `SIMILAR_ITEMS` | `true` | Send similar past items |
 | `HOUSEHOLD_EXAMPLES` | `5` | Item notes per category sent; `0` sends none |

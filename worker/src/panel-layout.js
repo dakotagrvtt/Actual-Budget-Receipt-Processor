@@ -1,6 +1,6 @@
 // What every page of the control panel shares: escaping, the page frame, the one inline style (and the CSP that pins it and the
 // script by hash), and the small pieces the pages are built from (forms, filter bar, sortable table, folder names).
-import { config } from './config.js';
+import { config, filesPlace } from './config.js';
 import { actualAnchor } from './actual-link.js';
 import { SCRIPT, hashOf } from './panel-script.js';
 import { WORKSPACE_CSS } from './panel-workspace-style.js';
@@ -291,7 +291,7 @@ export function layout({ active, key, notice, body, undo, wide, noticeTone, revi
 <a class="skip-link" href="#app-main">Skip to content</a>
 <header class="app-header"><a class="app-brand" data-navigate href="./${escape(k)}" title="Home" aria-label="Receipts, home">Receipts</a><nav class="app-tabs" aria-label="Main">${tabs(false)}</nav><div class="app-header-actions">
 ${actualAnchor('Actual &#8599;', '', 'header-actual')}<details class="header-add"><summary>+ Add receipt</summary><div class="header-menu header-upload"><form ${post('upload', key)} enctype="multipart/form-data" data-upload data-send="upload${escape(k)}&amp;defer=1" data-run="run${escape(k)}"><input class="filebtn" id="receipt-files" type="file" name="receipts" multiple required aria-label="Receipt photos or PDFs" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf,.heic,.heif"><label class="btn plain" for="receipt-files">Choose photos or PDFs</label><button class="plain" data-nojs>Send the chosen files</button></form><p>Up to 25 MB each · 20 files at a time.</p><p role="status" data-upload-status></p></div></details>
-<a class="dry-chip" data-navigate data-dry-chip href="./${escape(k)}&amp;activity=1" title="The worker only logs what it would do. Nothing changes in Actual or Nextcloud."${dry ? '' : ' hidden'}>Dry run</a></div></header>
+<a class="dry-chip" data-navigate data-dry-chip href="./${escape(k)}&amp;activity=1" title="The worker only logs what it would do. Nothing changes in Actual or ${filesPlace()}."${dry ? '' : ' hidden'}>Dry run</a></div></header>
 <main id="app-main" tabindex="-1" data-app-main data-active="${escape(active)}" data-tab="${tab}" data-review-count="${count}" data-dry="${dry ? 'true' : 'false'}" class="app-main${body.includes('workspace-shell') ? '' : ' standard-page'}"><h1 class="sr-only" tabindex="-1" data-page-heading>${escape(heading || title || PAGE_TITLES[active] || 'Inbox')}</h1>${noticeHtml(notice, undo, key, noticeTone)}${body}</main>
 <nav class="tabs" aria-label="Main, bottom bar">${tabs(true)}</nav>
 <dialog class="app-dialog" id="workspace-dialog" aria-labelledby="workspace-dialog-title"><div class="app-dialog-head"><h2 id="workspace-dialog-title"></h2><button type="button" class="small plain" data-dialog-close>Close</button></div><div class="app-dialog-body" id="workspace-dialog-body"></div></dialog>

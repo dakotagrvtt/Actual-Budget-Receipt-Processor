@@ -4,6 +4,7 @@
 import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { config } from '../src/config.js';
@@ -52,8 +53,14 @@ afterEach(() => {
 });
 
 // ---- the WebDAV stand-in ----
+// Its etag: a hash of the bytes (as a server's changes with every new version). If-Match on a read or delete is checked, as Nextcloud does.
+const etagOf = (data) => crypto.createHash('sha256').update(data).digest('hex').slice(0, 16);
 function fakeClient(initial = {}) {
   const files = new Map(Object.entries(initial).map(([p, v]) => [p, Buffer.from(v)]));
+  const notMatching = (p, opts) => {
+    const want = opts?.headers?.['If-Match'];
+    if (want && want.replaceAll('"', '') !== etagOf(files.get(p))) throw Object.assign(new Error('Precondition Failed'), { status: 412 });
+  };
   const dirs = new Set();
   const c = {
     files, dirs, calls: [], failPut: null, failStat: null, failDelete: null, statSize: null,
@@ -62,6 +69,7 @@ function fakeClient(initial = {}) {
     async getDirectoryContents(d) { return [...files.keys()].filter((p) => path.posix.dirname(p) === d).map((p) => ({ basename: path.posix.basename(p), filename: p, type: 'file' })); },
     async getFileContents(p, opts = {}) {
       if (!files.has(p)) throw Object.assign(new Error('Not Found'), { status: 404 });
+      notMatching(p, opts);
       return opts.format === 'text' ? files.get(p).toString() : files.get(p);
     },
     async putFileContents(p, data, opts = {}) {
@@ -74,12 +82,13 @@ function fakeClient(initial = {}) {
     async stat(p) {
       if (c.failStat) throw new Error('stat failed');
       if (!files.has(p)) throw Object.assign(new Error('Not Found'), { status: 404 });
-      return { size: c.statSize ?? files.get(p).length };
+      return { size: c.statSize ?? files.get(p).length, etag: `"${etagOf(files.get(p))}"` };
     },
-    async deleteFile(p) {
+    async deleteFile(p, opts = {}) {
       c.calls.push(['delete', p]);
       if (c.failDelete && c.failDelete(p)) throw new Error('delete failed');
       if (!files.has(p)) throw Object.assign(new Error('Not Found'), { status: 404 });
+      notMatching(p, opts);
       files.delete(p);
     },
     async moveFile(a, b, opts = {}) {
@@ -222,7 +231,9 @@ test('a shrunk copy that is at least 10% smaller is kept: .jpg name, checked, su
   assert.equal(out.dest, `${dirA}/a.jpg`);
   assert.deepEqual(out.shrunk, { before: 1000, after: 900 });
   assert.equal(c.files.get(`${dirA}/a.jpg`).length, 900);
-  assert.deepEqual(c.json(`${dirA}/a.jpg`).archived, { at: 'T', from: `${processed}/a.png`, shrunk: { before: 1000, after: 900 } });
+  // The note also names the original it was made from (#1: a retry deletes only that very file).
+  const sha256 = crypto.createHash('sha256').update(big).digest('hex');
+  assert.deepEqual(c.json(`${dirA}/a.jpg`).archived, { at: 'T', from: `${processed}/a.png`, shrunk: { before: 1000, after: 900, sha256 } });
   assert.equal(c.files.has(`${processed}/a.png`), false);
   const order = c.calls.map((x) => x.join(' '));
   assert.ok(order.indexOf(`put ${dirA}/a.jpg.json`) < order.indexOf(`delete ${processed}/a.png`), 'the summary is written before the original goes');
@@ -308,6 +319,63 @@ test('a photo moved by an earlier archiving that never recorded it is found agai
   const c = fakeClient({ [`${dirA}/a.jpg`]: 'small', [`${dirA}/a.jpg.json`]: note('other-key', 't9'), [`${dirA}/1700000000000-a.jpg`]: 'mine', [`${dirA}/1700000000000-a.jpg.json`]: note('my-key', 't1') });
   const out = await archiveFileWith(c, { from: `${processed}/a.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: true, shrinkFn: shrinkTo(1), id: { key: 'my-key', txnId: 't1' } });
   assert.deepEqual(out, { dest: `${dirA}/1700000000000-a.jpg`, shrunk: { before: 9, after: 5 }, fileMissing: false });
+});
+
+test('#1 a retry deletes the original only when it is the very file the shrunk copy was made from (Nextcloud: hash, then If-Match)', async () => {
+  const dirA = `${archive}/m`;
+  const sha256 = (x) => crypto.createHash('sha256').update(x).digest('hex');
+  const note = (shrunk) => JSON.stringify({ archived: { at: 'T0', from: `${processed}/a.jpg`, key: 'my-key', shrunk } });
+  const original = 'o'.repeat(1000);
+  const other = 'p'.repeat(1000); // another photo of the same size, put at the original's name since the earlier try
+  // The original is still there: only it goes, by its version.
+  let c = fakeClient({ [`${processed}/a.jpg`]: original, [`${dirA}/a.jpg`]: 'small', [`${dirA}/a.jpg.json`]: note({ before: 1000, after: 5, sha256: sha256(original) }) });
+  let out = await archiveFileWith(c, { from: `${processed}/a.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: true, shrinkFn: shrinkTo(1), id: { key: 'my-key' } });
+  assert.deepEqual(out, { dest: `${dirA}/a.jpg`, shrunk: { before: 1000, after: 5 }, fileMissing: false }, 'the entry keeps only the sizes');
+  assert.equal(c.files.has(`${processed}/a.jpg`), false);
+  // A same-size replacement is not the original: never deleted, archived as usual beside the earlier copy.
+  c = fakeClient({ [`${processed}/a.jpg`]: other, [`${dirA}/a.jpg`]: 'small', [`${dirA}/a.jpg.json`]: note({ before: 1000, after: 5, sha256: sha256(original) }) });
+  out = await archiveFileWith(c, { from: `${processed}/a.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: false, id: { key: 'my-key' } });
+  assert.notEqual(out.dest, `${dirA}/a.jpg`);
+  assert.equal(c.files.get(out.dest).toString(), other, 'the new photo is kept, moved into the archive');
+  assert.equal(c.files.get(`${dirA}/a.jpg`).toString(), 'small', 'the earlier copy is untouched');
+  assert.ok(!c.calls.some(([op, p]) => op === 'delete' && p === `${processed}/a.jpg`));
+  // An older note without the hash can't tell: the file is kept (archived beside), never deleted on its size alone.
+  c = fakeClient({ [`${processed}/a.jpg`]: original, [`${dirA}/a.jpg`]: 'small', [`${dirA}/a.jpg.json`]: note({ before: 1000, after: 5 }) });
+  out = await archiveFileWith(c, { from: `${processed}/a.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: false, id: { key: 'my-key' } });
+  assert.equal(c.files.get(out.dest).toString(), original);
+  // Replaced between the check and the delete: the If-Match delete fails and the new version is archived as usual.
+  c = fakeClient({ [`${processed}/a.jpg`]: original, [`${dirA}/a.jpg`]: 'small', [`${dirA}/a.jpg.json`]: note({ before: 1000, after: 5, sha256: sha256(original) }) });
+  const read = c.getFileContents;
+  c.getFileContents = async (p, opts) => { const data = await read(p, opts); if (p === `${processed}/a.jpg`) c.files.set(p, Buffer.from(other)); return data; };
+  out = await archiveFileWith(c, { from: `${processed}/a.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: false, id: { key: 'my-key' } });
+  assert.equal(c.files.get(out.dest).toString(), other);
+});
+
+test('#13 Archive all lists a Nextcloud month folder once for the whole batch, and finds the names it put there itself', async () => {
+  const dirA = `${archive}/m`;
+  const c = fakeClient(Object.fromEntries(['a', 'b', 'c'].map((n) => [`${processed}/${n}.jpg`, big])));
+  let listed = 0;
+  const list = c.getDirectoryContents;
+  c.getDirectoryContents = async (...a) => { listed++; return list(...a); };
+  for (const n of ['a', 'b', 'c']) await archiveFileWith(c, { from: `${processed}/${n}.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: false, id: { key: `k-${n}` } });
+  assert.equal(listed, 1);
+  // Retried (say the list of receipts could not be saved): its own photo is found by the name it was put under, without a new listing.
+  const again = await archiveFileWith(c, { from: `${processed}/a.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: false, id: { key: 'k-a' } });
+  assert.deepEqual([again.dest, again.fileMissing, listed], [`${dirA}/a.jpg`, false, 1]);
+  // A failed archiving forgets the list: the next one looks again.
+  c.files.set(`${processed}/d.jpg`, Buffer.from(big));
+  const move = c.moveFile;
+  c.moveFile = async () => { throw Object.assign(new Error('server error'), { status: 500 }); };
+  await assert.rejects(archiveFileWith(c, { from: `${processed}/d.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: false, id: { key: 'k-d' } }), /server error/);
+  c.moveFile = move;
+  const d = await archiveFileWith(c, { from: `${processed}/d.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: false, id: { key: 'k-d' } });
+  assert.equal(d.dest, `${dirA}/d.jpg`);
+  assert.equal(listed, 2);
+  // A listing that fails is an error, not an empty folder.
+  const down = fakeClient({ [`${processed}/e.jpg`]: big });
+  down.getDirectoryContents = async () => { throw Object.assign(new Error('server error'), { status: 500 }); };
+  await assert.rejects(archiveFileWith(down, { from: `${processed}/e.jpg`, dir: dirA, summary: SUMMARY, at: 'T', shrink: false }), /server error/);
+  assert.ok(down.files.has(`${processed}/e.jpg`), 'nothing moved');
 });
 
 test('crash recovery never adopts another receipt\'s photo that merely had the same Processed path', async () => {

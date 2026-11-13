@@ -18,9 +18,10 @@ import * as learning from './learning.js';
 import { autoArchive } from './archive.js';
 import { reviewCause } from './review-cause.js';
 import { cardOf } from './archive-rules.js';
-import { loadState, saveState, stateKey, parseStateKey, isDue, resolutionBlocked, heartbeat, syncForgotten, failedEntry, giveUpEntry, replacedEntry, MAX_TRANSIENT_CYCLES, MAX_IMAGE_SKIPS } from './state.js';
+import { forgetKeys, loadState, saveState, stateKey, parseStateKey, isDue, resolutionBlocked, heartbeat, syncForgotten, failedEntry, giveUpEntry, replacedEntry, MAX_TRANSIENT_CYCLES, MAX_IMAGE_SKIPS } from './state.js';
 import { refreshMode, resolveDryRun, envDisagreement, mustStopForDry } from './settings.js';
 import { startTriggerServer } from './trigger.js';
+import { verifyStorageMarker } from './storage-state.js';
 import { saveDrySummary } from './dry-summaries.js';
 import { createUpgradeWatcher, EXIT_CODE } from './actual-upgrade.js';
 import { isTransient, TransientError, isFileChanged } from './errors.js';
@@ -28,8 +29,9 @@ import { classifyFailure } from './failure.js';
 import { repairPermissions } from './private-files.js';
 import path from 'node:path';
 import { exclusive, drain } from './session-lock.js';
+import { replayRequeues } from './requeue.js';
 import { filedRereads, dropStaleRereads, rereadAllFiled } from './reread.js';
-import { reportSetupProblem, clearSetupProblem, clearSetupProblemIfQuiet, useAlertFile, beginCycle } from './alert.js';
+import { reportSetupProblem, clearSetupProblem, clearSetupProblemIfQuiet, clearCycleProblem, useAlertFile, beginCycle } from './alert.js';
 
 const MAX_ATTEMPTS = 3; // failed attempts at one receipt before it goes to Needs review
 const MS_PER_SECOND = 1000;
@@ -227,6 +229,11 @@ async function cycle({ recheckAll = false } = {}) {
     if (updated) await saveState(state);
   }
   await nextcloud.sweepUploads().catch((err) => log(`could not clear old temporary upload files: ${err.message}`)); // leftovers of uploads from the status page that never finished
+  // A "Try again" from the status page that stopped half way: finished before the inbox is read, so its file is not skipped as done.
+  if (!config.dryRun) {
+    state = await replayRequeues(state, { requeueFromReview: nextcloud.requeueFromReview, forgetKeys, saveState, log })
+      .catch(async (err) => { log(`could not finish a "try again": ${err.message}`); return loadState(); });
+  }
   const inbox = await nextcloud.listInbox();
   if (dropDepartedWaiting(state, inbox)) await saveState(state);
   const now = Date.now();
@@ -409,12 +416,17 @@ async function main() {
       recheckAll = false;
       await exclusive(async () => { // changes from the receipt page wait for a cycle to end (session-lock.js)
         reloadConfig(); refreshMode();
+        await verifyStorageMarker(nextcloud.davClient()); // the same storage at a new address, or an empty/unmounted folder
+        await loadState(); // pause before any file operation when storage needs migration
         if (!config.dryRun) await nextcloud.ensureFolders();
         await cycle(opts);
         if (!stopping) await archiveDone();
       });
+      await clearCycleProblem();
     } catch (err) {
       log(`cycle failed${isTransient(err) ? ' (outage, retrying on the next poll)' : ''}: ${err.message}`);
+      // Not an outage: it fails the same way at every poll, so the status page says so (and the container reports unhealthy).
+      if (!isTransient(err)) await reportSetupProblem(err, { kind: 'cycle' });
     }
     await heartbeat();
     if (stopping) break;

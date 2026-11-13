@@ -10,7 +10,7 @@ categories, item by item. If the receipt covers several categories (groceries an
 is split into one part per category.
 
 **By default everything runs on your own computer.** Your receipt photos and purchases are sent nowhere except to your
-own Actual and Nextcloud servers. Two optional cloud features are off unless you switch them on: see
+own Actual and Nextcloud servers (or nowhere, if you keep the receipts in a local folder). Two optional cloud features are off unless you switch them on: see
 [Privacy](#privacy).
 
 ![The Inbox on a computer: a receipt photo next to its items, each with the category the decider picked, one item marked "Not sure", and the split the charge gets in Actual](docs/images/inbox-desktop.png)
@@ -42,7 +42,7 @@ All screenshots use made-up receipts.
 
 ```mermaid
 flowchart TD
-  you(["You add a photo or PDF"]) --> inbox[("Nextcloud<br/>Receipts/Inbox")]
+  you(["You add a photo or PDF"]) --> inbox[("Nextcloud or a local folder<br/>Receipts/Inbox")]
   inbox --> read
 
   subgraph machine["Your machine: the worker and two local models"]
@@ -73,8 +73,10 @@ You need:
 - a Linux computer with [Docker](https://docs.docker.com/engine/install/);
 - a graphics card (AMD, Intel or NVIDIA) with about 9 GB free (setup picks smaller settings for 8 GB; with no card it
   runs on the processor, just slowly) and about 10 GB of disk for the two models;
-- an Actual Budget server with your bank transactions in it, and a [Nextcloud](https://nextcloud.com) server to upload
-  receipts to.
+- an Actual Budget server with your bank transactions in it;
+- a place for the receipt files: a [Nextcloud](https://nextcloud.com) server, or just a folder on this computer. Setup
+  asks which. Without Nextcloud, phones add receipts with **+ Add receipt** in the app, or you sync the folder with any
+  tool you like.
 
 ```
 git clone https://github.com/dakotagrvtt/Actual-Budget-Receipt-Processor.git receipt-pipeline
@@ -82,8 +84,8 @@ cd receipt-pipeline
 ./receipts setup
 ```
 
-Setup checks Docker, asks for your Actual and Nextcloud details, picks settings for your graphics card, downloads the
-models, offers to create `Receipts/Inbox`, tests the connections and drafts a description for each budget category. It asks
+Setup checks Docker, asks for your Actual details and where to keep the receipts (Nextcloud or a local folder), picks
+settings for your graphics card, downloads the models, creates the inbox folder (or offers to, in Nextcloud), tests the connections and drafts a description for each budget category. It asks
 before anything big, and you can run it again any time. At the end it prints the link to your **receipt app**.
 
 **Your first receipt:** upload one for a purchase already in Actual, open the app, go to **Activity and test mode** (at
@@ -91,8 +93,8 @@ the bottom of the Inbox list) and press **Check now**. When the results look rig
 
 ## Everyday use
 
-Upload receipts to `Receipts/Inbox` (the Nextcloud phone app can do it automatically) or with **+ Add receipt** in the
-app. The pipeline checks every 5 minutes, and the models unload after 5 idle minutes to free the graphics card.
+Upload receipts to `Receipts/Inbox` in Nextcloud (the Nextcloud phone app can do it automatically), put them in the
+`Inbox` folder of your local receipt folder, or use **+ Add receipt** in the app. The pipeline checks every 5 minutes, and the models unload after 5 idle minutes to free the graphics card.
 
 The **receipt app** is the control panel. Its link holds a secret key (`./receipts trigger-url` prints it again), so keep
 it private and on your own network. It has three tabs:
@@ -130,6 +132,7 @@ Day to day you don't need these. `./receipts help` lists them all.
 | `./receipts update` | Rebuild after a code update |
 | `./receipts status` / `logs` | Mode, health and any alert / follow the log |
 | `./receipts check` | Test every connection (changes nothing) |
+| `./receipts migrate-storage` | After a storage or folder change: copy receipts to the new storage, or move them to the new folders (`--cancel` undoes an unfinished copy, `--adopt` records the same storage reached another way, `--into-used` copies into folders that already hold files) |
 | `./receipts mode dry` / `mode live` | Switch mode, like the app's switch |
 | `./receipts trigger-url` | Print the app link again |
 | `./receipts download-models` | Fetch the models (also after changing a model setting) |
@@ -158,7 +161,7 @@ To try a value on your own receipts first, run `./receipts replay`. How each def
 ## Privacy
 
 **Default: everything is local.** The photo, the reading, the categorizing and what you taught it stay in `data/` on
-your computer. The only outside connections are your own Actual and Nextcloud servers and the one-time model downloads.
+your computer. The only outside connections are your own Actual server, your Nextcloud server (if you use one) and the one-time model downloads.
 
 Two optional cloud features, each off unless you choose it in setup or `.env`:
 

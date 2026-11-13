@@ -12,6 +12,7 @@ import { loadKeywords } from '../src/keywords.js';
 import { loadCategoryNotes, saveUserNote } from '../src/category-notes.js';
 import { forgetKeys, loadState, saveState, syncForgotten } from '../src/state.js';
 import { readSettings } from '../src/settings.js';
+import { replayRequeues } from '../src/requeue.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'panel-test-'));
 Object.assign(config, {
@@ -298,6 +299,66 @@ test('try again: a file that is not in Needs review keeps its state entry; one a
   assert.ok(k in (await loadState()));
   await actions.tryAgain(form({ entry: k }), { nextcloud: stubNextcloud({ inInbox: true }) });
   assert.deepEqual(await loadState(), {});
+});
+
+test('try again stopped after the move, before the entry was cleared: the worker finishes it before it reads the inbox (#10)', async () => {
+  newCycle();
+  config.dryRun = false;
+  const [k, e] = live('review');
+  await saveState({ [k]: e });
+  // The move happens, then the status page is stopped (here: the call throws) before forgetKeys.
+  let noted;
+  const crashing = { requeueFromReview: async () => { noted = (await loadState())[k]?.requeue; throw new Error('stopped'); } };
+  await assert.rejects(actions.tryAgain(form({ entry: k }), { nextcloud: crashing }), /stopped/);
+  assert.deepEqual(noted, { from: '/Receipts/Needs review/r.jpg', name: 'r.jpg', etag: 'etag1' }, 'written down before anything moved, with the version (from its key when it can\'t be looked at)');
+  let state = await loadState();
+  assert.ok(state[k].requeue, 'the note is still there for the worker');
+  // The worker's next cycle: requeue finds the file in the inbox already, so the old "done" entry goes and the file is read again.
+  const calls = [];
+  state = await replayRequeues(state, { requeueFromReview: async (...a) => (calls.push(a), { inInbox: true }), forgetKeys, saveState });
+  assert.deepEqual(calls, [['/Receipts/Needs review/r.jpg', 'r.jpg', 'etag1']]);
+  assert.equal(k in state, false);
+  assert.deepEqual(await loadState(), {});
+  newCycle();
+});
+
+test('try again that moved nothing leaves no note behind; a replay that is refused only drops the note', async () => {
+  newCycle();
+  config.dryRun = false;
+  const [k, e] = live('review');
+  await saveState({ [k]: e });
+  await assert.rejects(actions.tryAgain(form({ entry: k }), { nextcloud: stubNextcloud({ refused: 'exists' }) }), /already has a file/);
+  assert.equal((await loadState())[k].requeue, undefined);
+  await saveState({ [k]: { ...e, requeue: { from: e.filedAs, name: 'r.jpg' } } });
+  const state = await replayRequeues(await loadState(), { requeueFromReview: async () => ({ refused: 'exists' }), forgetKeys, saveState });
+  assert.equal(state[k].requeue, undefined);
+  assert.equal(state[k].done, true, 'the entry itself is kept');
+  assert.equal((await loadState())[k].requeue, undefined);
+});
+
+test('#6 try again records the version it moves; a replay that can\'t tell where the file went keeps the entry and its note', async () => {
+  newCycle();
+  config.dryRun = false;
+  const [k, e] = live('review');
+  await saveState({ [k]: e });
+  // The version is looked up in Needs review first (the key's is only a fallback), and passed to the move.
+  const calls = [];
+  const nc = { statPath: async () => ({ etag: '"v2"' }), requeueFromReview: async (...a) => (calls.push(a), { unsure: true }) };
+  await assert.rejects(actions.tryAgain(form({ entry: k }), { nextcloud: nc }), /another file with that name, so nothing was changed/);
+  assert.deepEqual(calls, [['/Receipts/Needs review/r.jpg', 'r.jpg', 'v2']]);
+  assert.equal((await loadState())[k].requeue, undefined, 'nothing moved: no note left');
+  await assert.rejects(actions.tryAgain(form({ entry: k }), { nextcloud: { requeueFromReview: async () => ({ refused: 'changed' }) } }), /changed just now/);
+  // The worker's replay: not in review, another photo at the inbox name. The entry and its note stay; the next replay looks again.
+  await saveState({ [k]: { ...e, requeue: { from: e.filedAs, name: 'r.jpg', etag: 'v2' } } });
+  const logged = [];
+  let state = await replayRequeues(await loadState(), { requeueFromReview: async () => ({ unsure: true }), forgetKeys, saveState, log: (m) => logged.push(m) });
+  assert.deepEqual(state[k].requeue, { from: e.filedAs, name: 'r.jpg', etag: 'v2' });
+  assert.deepEqual((await loadState())[k].requeue, { from: e.filedAs, name: 'r.jpg', etag: 'v2' });
+  assert.equal(logged.length, 1);
+  // Once the file is back in review (the other process put it back), the replay moves it and clears the entry.
+  state = await replayRequeues(state, { requeueFromReview: async () => ({ moved: '/Receipts/Inbox/r.jpg' }), forgetKeys, saveState });
+  assert.equal(k in state, false);
+  newCycle();
 });
 
 test('try again: an entry without a recorded path (older version) is refused; nothing moves, state kept', async () => {

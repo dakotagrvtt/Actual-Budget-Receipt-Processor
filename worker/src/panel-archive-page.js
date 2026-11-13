@@ -1,6 +1,6 @@
 // The Archived tab: the receipts you archived (searchable and sortable), Restore, and a short "How archiving works". Also the
 // confirm page behind "Archive all done receipts" on the Status tab. Pure: data in, HTML out (trigger.js fetches the data).
-import { config } from './config.js';
+import { config, filesPlace } from './config.js';
 import { BULK_LIMIT } from './archive-rules.js';
 import { STATUS_ORDERING, archiveBanner, receiptNav, orderFor, navQuery } from './panel-status.js';
 import { archiveRail, archiveSearch } from './panel-queue.js';
@@ -69,7 +69,7 @@ export function archiveAllPage(data, key, notice, undo) {
     const { shrink } = config.archive;
     const batch = data.count > BULK_LIMIT ? ` They are archived ${BULK_LIMIT} at a time: press the button again for the rest.` : '';
     body = `<h2>Archive ${data.count} done receipt${data.count === 1 ? '' : 's'}?</h2>
-<div class="banner live"><b>This moves files in Nextcloud.</b>
+<div class="banner live"><b>This moves files in ${filesPlace()}.</b>
 The photo and summary of each Done receipt move from ${escape(processedDir())} to ${escape(archiveDir())}, into a folder for each month.${shrink ? ' Photos are saved again as smaller JPEGs (PDFs are not changed); the full-size original is replaced and can\'t be brought back.' : ''}${escape(batch)}</div>
 <p class="muted">Nothing changes in Actual. Receipts that still need a look (tagged #review, or in Needs review) are not included. You can restore any of them from the Archived tab.</p>
 <form ${post('archive-all', key)}><button class="danger">Archive ${data.count} receipt${data.count === 1 ? '' : 's'}</button></form>

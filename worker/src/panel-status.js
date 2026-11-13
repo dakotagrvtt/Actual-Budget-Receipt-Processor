@@ -1,7 +1,10 @@
 // The Status tab: the list of receipts with their status in plain words (one STATUS table feeds the list and its legend),
 // the filter / sort / Previous-Next order, the dry run / live banner and the go-live page.
 import { REVIEW_CAUSES, reviewCause } from './review-cause.js';
-import { config } from './config.js';
+import { config, filesPlace } from './config.js';
+
+/** Where uploads land, as the help text names it. */
+const inboxPlace = () => (filesPlace() === 'Nextcloud' ? 'Nextcloud Inbox' : 'Inbox folder');
 import { statusKind, splitResult } from './status-kind.js';
 import { retryStatus } from './panel-actions.js';
 import { queueRail, queueGroup, queueSearch } from './panel-queue.js';
@@ -192,8 +195,8 @@ export function retryCell(r, key, extra = '') {
  */
 function modeBar({ dryRun, pending, heartbeat }, key) {
   const chip = dryRun
-    ? '<span class="chip dry" title="The worker only logs what it would do. Nothing changes in Actual or Nextcloud."><b>Dry run</b></span>'
-    : '<span class="chip" title="The worker writes to Actual and moves files in Nextcloud."><b>Live</b></span>';
+    ? `<span class="chip dry" title="The worker only logs what it would do. Nothing changes in Actual or ${filesPlace()}."><b>Dry run</b></span>`
+    : `<span class="chip" title="The worker writes to Actual and moves files in ${filesPlace()}."><b>Live</b></span>`;
   const beat = Number.isNaN(Date.parse(heartbeat)) ? escape(ago(heartbeat)) : `${timeTag(heartbeat, ago(heartbeat))} (${escape(clockOrDate(heartbeat))})`;
   const last = `<span class="muted small when">Last check ${beat} · every ${Math.round(config.pollSeconds / 60)} min</span>`;
   const button = dryRun
@@ -204,7 +207,7 @@ function modeBar({ dryRun, pending, heartbeat }, key) {
 }
 
 function statusDetails(data) {
-  const explain = data.dryRun ? 'Dry run only previews receipts. Nothing changes in Actual or Nextcloud.' : 'Live mode writes to Actual and moves files in Nextcloud.';
+  const explain = data.dryRun ? `Dry run only previews receipts. Nothing changes in Actual or ${filesPlace()}.` : `Live mode writes to Actual and moves files in ${filesPlace()}.`;
   return `<details class="how"><summary>Status details</summary><p>${explain}</p>${data.settings ? `<p class="muted small">Last changed ${escape(when(data.settings.changedAt))}${data.settings.changedBy ? ` from ${escape(data.settings.changedBy)}` : ''}.</p>` : ''}${[data.envNote, data.apiNote].filter(Boolean).map((note) => `<p class="muted small">${escape(note)}</p>`).join('')}</details>`;
 }
 
@@ -286,7 +289,7 @@ ${data.stateError ? `<p class="notice err">Can't read the list of receipts: ${es
 ${data.hiddenDone ? `<p class="muted small">${data.hiddenDone} older Done receipt${data.hiddenDone === 1 ? ' is' : 's are'} not shown. Receipts that need attention are always listed. Archive the Done ones you have checked to keep this list short; they are on the Archived tab.</p>` : ''}
 ${archiveAllButton(data, key)}
 ${statusDetails(data)}
-<details class="how"><summary>Upload help</summary><p>Choose JPG, PNG, WebP, HEIC photos or PDFs. Uploads go to the Nextcloud Inbox and are checked automatically.</p></details>
+<details class="how"><summary>Upload help</summary><p>Choose JPG, PNG, WebP, HEIC photos or PDFs. Uploads go to the ${inboxPlace()} and are checked automatically.</p></details>
 ${statusLegend()}</details></section>`;
   const body = `<div class="workspace-shell${activity ? ' has-receipt' : ''}" data-overview>${queueRail(data.recent, key, '', '', railAlerts(data, key), { openGroup: opts.group === 'filed' ? 'filed' : '', activity })}${landing}${diagnostics}</div>`;
   return layout({ active: 'status', key, notice, body, undo, reviewCount: review.length, title: activity ? 'Activity' : '' });
@@ -296,11 +299,11 @@ ${statusLegend()}</details></section>`;
 export function goLivePage(key, notice, undo) {
   const body = `<h2>Go live?</h2>
 <div class="banner live"><b>This changes real data.</b>
-In live mode the worker writes to Actual (splits and recategorizes transactions, adds notes) and moves receipt files in Nextcloud.
+In live mode the worker writes to Actual (splits and recategorizes transactions, adds notes) and moves receipt files in ${filesPlace()}.
 Receipts it already looked at in dry run are processed again, for real, at the next check.</div>
 <form ${post('mode', key)}>
 <input type="hidden" name="mode" value="live">
-<label class="check"><input type="checkbox" name="confirm" value="yes" required><span>I understand: receipts seen in dry run will be processed for real, changing Actual and moving files in Nextcloud.</span></label>
+<label class="check"><input type="checkbox" name="confirm" value="yes" required><span>I understand: receipts seen in dry run will be processed for real, changing Actual and moving files in ${filesPlace()}.</span></label>
 <button class="danger">Go live</button>
 </form>
 <p><a href="./?key=${escape(encodeURIComponent(key))}">Cancel, stay in dry run</a></p>`;

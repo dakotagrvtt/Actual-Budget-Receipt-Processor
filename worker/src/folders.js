@@ -15,7 +15,7 @@ export const inFolder = (p, folder) => String(p ?? '').replace(/^\/+/, '').start
 export function archiveFolderProblem({ inbox, processed, review, archive }) {
   const norm = (p) => String(p ?? '').split('/').filter((x) => x && x !== '.').join('/'); // // and /./ mean the same folder
   const a = norm(archive);
-  if (!a) return `RECEIPTS_ARCHIVE (${archive}) can't be the root of your Nextcloud`;
+  if (!a) return `RECEIPTS_ARCHIVE (${archive}) can't be the root of your receipt storage`;
   if (a.split('/').includes('..')) return `RECEIPTS_ARCHIVE (${archive}) can't contain ".."`;
   const within = (child, parent) => child === parent || child.startsWith(`${parent}/`);
   for (const [name, other] of [['inbox', inbox], ['Processed', processed], ['Needs review', review]]) {

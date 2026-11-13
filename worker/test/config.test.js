@@ -403,7 +403,7 @@ const compose = (fn, script, env) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-test-'));
   try {
     fs.writeFileSync(path.join(dir, '.env'), env);
-    const r = spawnSync('bash', ['-c', `set -euo pipefail\nREMOTE_OVERLAY=compose.remote-decider.yaml\nREADER_OVERLAY=compose.remote-reader.yaml\nsay() { printf '%s\\n' "$*"; }\ndie() { echo "$*" >&2; exit 1; }\n${fn}\n${script}`], { cwd: dir, encoding: 'utf8' });
+    const r = spawnSync('bash', ['-c', `set -euo pipefail\nREMOTE_OVERLAY=compose.remote-decider.yaml\nREADER_OVERLAY=compose.remote-reader.yaml\nFILES_OVERLAY=compose.local-files.yaml\nDEFAULT_RECEIPTS_DIR=./receipt-files\nsay() { printf '%s\\n' "$*"; }\ndie() { echo "$*" >&2; exit 1; }\n${fn}\n${script}`], { cwd: dir, encoding: 'utf8' });
     return { out: r.stdout.trim(), err: r.stderr, status: r.status, env: fs.readFileSync(path.join(dir, '.env'), 'utf8') };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -417,6 +417,82 @@ test('./receipts: base_compose strips both the hosted-decider and the cloud-read
   assert.equal(base('compose.yaml:compose.remote-reader.yaml'), 'compose.yaml');
   assert.equal(base('compose.yaml:compose.remote-reader.yaml:compose.small-gpu.yaml'), 'compose.yaml:compose.small-gpu.yaml');
   assert.equal(base('compose.yaml:compose.nvidia.yaml'), 'compose.yaml:compose.nvidia.yaml');
+});
+
+test('./receipts: base_compose also strips the local-folder overlay, which setup chooses with STORAGE', () => {
+  const fn = bashFns(fs.readFileSync(RECEIPTS, 'utf8'), ['compose_without', 'base_compose']);
+  assert.equal(compose(fn, "base_compose 'compose.yaml:compose.cpu.yaml:compose.local-files.yaml:compose.remote-reader.yaml'", '').out, 'compose.yaml:compose.cpu.yaml');
+});
+
+test('./receipts: sync_storage_overlay puts the local-folder overlay in COMPOSE_FILE exactly when STORAGE=local, the cloud reader still last', () => {
+  const fns = ['env_get', 'env_set', 'env_unset', 'env_lower', 'compose_without', 'compose_set', 'compose_add', 'compose_remove', 'compose_reader_last', 'local_storage', 'warn', 'fill_worker_ids', 'sync_storage_overlay'];
+  const fn = bashFns(fs.readFileSync(RECEIPTS, 'utf8'), fns);
+  const files = (envFile) => compose(fn, 'sync_storage_overlay', envFile).env.match(/^COMPOSE_FILE='?([^'\n]*)'?$/m)?.[1];
+  assert.equal(files('STORAGE=local\n'), 'compose.yaml:compose.local-files.yaml');
+  assert.equal(files('STORAGE=local\nCOMPOSE_FILE=compose.yaml:compose.remote-reader.yaml\n'), 'compose.yaml:compose.local-files.yaml:compose.remote-reader.yaml');
+  assert.equal(files('STORAGE=nextcloud\nCOMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.local-files.yaml\n'), 'compose.yaml:compose.nvidia.yaml');
+  assert.equal(files('STORAGE=nextcloud\n'), undefined); // the default list is stored as no line at all
+});
+
+test('./receipts: docker_dir gives Docker a folder path (./ in front of a bare name, which would be a named volume; ~/ is home)', () => {
+  const fn = bashFns(fs.readFileSync(RECEIPTS, 'utf8'), ['docker_dir']);
+  const d = (v) => compose(fn, `HOME=/home/someone; docker_dir '${v}'`, '').out;
+  assert.equal(d('receipt-files'), './receipt-files');
+  assert.equal(d('My Receipts'), './My Receipts');
+  assert.equal(d('./receipt-files'), './receipt-files');
+  assert.equal(d('../shared/receipts'), '../shared/receipts');
+  assert.equal(d('/srv/receipts'), '/srv/receipts');
+  assert.equal(d('~/Receipts'), '/home/someone/Receipts');
+});
+
+const STORAGE_FNS = ['env_get', 'env_set', 'env_unset', 'env_lower', 'compose_without', 'compose_set', 'compose_add', 'compose_remove', 'compose_reader_last', 'local_storage', 'docker_dir', 'receipts_dir', 'warn', 'fill_worker_ids', 'sync_storage_overlay'];
+
+test('./receipts: sync_storage_overlay (local) fixes a bare RECEIPTS_DIR in .env and sets RECEIPTS_UID/GID to you when missing', () => {
+  const fn = bashFns(fs.readFileSync(RECEIPTS, 'utf8'), STORAGE_FNS);
+  const me = { uid: String(process.getuid()), gid: String(process.getgid()) };
+  const after = (envFile) => {
+    const r = compose(fn, `sync_storage_overlay >/dev/null; for k in RECEIPTS_DIR RECEIPTS_UID RECEIPTS_GID; do printf '%s=%s\\n' "$k" "$(env_get $k)"; done`, envFile);
+    assert.equal(r.status, 0, r.err);
+    return Object.fromEntries(r.out.split('\n').map((l) => l.split(/=(.*)/s).slice(0, 2)));
+  };
+  assert.deepEqual(after('STORAGE=local\nRECEIPTS_DIR=receipt-files\n'), { RECEIPTS_DIR: './receipt-files', RECEIPTS_UID: me.uid, RECEIPTS_GID: me.gid });
+  assert.equal(after("STORAGE=local\nRECEIPTS_DIR='My Receipts'\n").RECEIPTS_DIR, './My Receipts');
+  assert.deepEqual(after('STORAGE=local\nRECEIPTS_DIR=/srv/r\nRECEIPTS_UID=1234\nRECEIPTS_GID=1235\n'), { RECEIPTS_DIR: '/srv/r', RECEIPTS_UID: '1234', RECEIPTS_GID: '1235' });
+  assert.deepEqual(after('STORAGE=nextcloud\nRECEIPTS_DIR=receipt-files\n'), { RECEIPTS_DIR: 'receipt-files', RECEIPTS_UID: me.uid, RECEIPTS_GID: me.gid }, 'Nextcloud also runs as the host user');
+});
+
+const FOLDER_FNS = [...STORAGE_FNS, 'worker_uid', 'worker_can_write', 'page_folder_keys', 'make_local_folders'];
+const withWarn = (script) => `IMAGE_UID=1000\nwarn() { echo "WARN $*"; }\n${script}`;
+
+test('./receipts: make_local_folders makes the folders private and yours, never runs sudo or chown', () => {
+  const fn = bashFns(fs.readFileSync(RECEIPTS, 'utf8'), FOLDER_FNS);
+  assert.doesNotMatch(fn, /sudo|chown/);
+  const r = compose(fn, withWarn(`sudo() { echo SUDO; }\nmake_local_folders\nstat -c '%a %u' receipt-files receipt-files/Inbox 'receipt-files/Needs review'`), `STORAGE=local\nRECEIPTS_UID=${process.getuid()}\nRECEIPTS_GID=${process.getgid()}\n`);
+  assert.equal(r.status, 0, r.err);
+  assert.doesNotMatch(r.out, /SUDO|WARN/);
+  assert.match(r.out, /The receipt folder is "\.\/receipt-files"/);
+  const modes = r.out.split('\n').slice(-3);
+  for (const line of modes) assert.equal(line, `700 ${process.getuid()}`);
+});
+
+test('./receipts: worker_can_write follows the user the worker runs as (you with STORAGE=local)', () => {
+  const fn = bashFns(fs.readFileSync(RECEIPTS, 'utf8'), FOLDER_FNS);
+  const script = withWarn(`mkdir -m 700 mine; mkdir -m 500 locked\nfor d in mine locked; do if worker_can_write "$d"; then echo "$d yes"; else echo "$d no"; fi; done; chmod 700 locked`);
+  const me = `STORAGE=local\nRECEIPTS_UID=${process.getuid()}\n`;
+  if (process.getuid() !== 0) assert.equal(compose(fn, script, me).out, 'mine yes\nlocked no');
+  // Another user id (the image's 1000 for Nextcloud, or a RECEIPTS_UID that is not you): only a folder open to others would do.
+  const other = process.getuid() === 4242 ? 4243 : 4242;
+  assert.equal(compose(fn, script, `STORAGE=local\nRECEIPTS_UID=${other}\n`).out, 'mine no\nlocked no');
+});
+
+test('./receipts: page_folder_keys names the folder settings the Settings tab sets, never their values', () => {
+  const fn = bashFns(fs.readFileSync(RECEIPTS, 'utf8'), FOLDER_FNS);
+  const r = compose(fn, withWarn(`mkdir data; printf '%s' '{"RECEIPTS_INBOX": "/Somewhere/Made-Up", "RECEIPTS_ARCHIVE":"/Old", "POLL_SECONDS": "60"}' > data/web-settings.json\npage_folder_keys\nmake_local_folders`), `STORAGE=local\nRECEIPTS_UID=${process.getuid()}\n`);
+  assert.equal(r.status, 0, r.err);
+  assert.equal(r.out.split('\n')[0], 'RECEIPTS_INBOX RECEIPTS_ARCHIVE');
+  assert.match(r.out, /WARN The status page's Settings tab sets RECEIPTS_INBOX RECEIPTS_ARCHIVE, which win over \.env/);
+  assert.doesNotMatch(r.out, /Somewhere|Made-Up|\/Old/);
+  assert.equal(compose(fn, withWarn('page_folder_keys'), '').out, '', 'no settings file: nothing');
 });
 
 test('./receipts: compose_reader_last moves the cloud-reader overlay behind the hosted-decider one and leaves other lists alone', () => {
@@ -622,4 +698,30 @@ test('siteUrl: an Actual or Nextcloud address typed without a scheme means https
     ['https://budget.example.com/', 'https://budget.example.com'],
     ['HTTPS://Budget.example.com', 'HTTPS://Budget.example.com'],
   ]) assert.equal(siteUrl(typed), want, typed);
+});
+
+test('./receipts: base worker uses the host identity in either mode, with a writable HOME for unknown uids', () => {
+  const base = fs.readFileSync(new URL('../../compose.yaml', import.meta.url), 'utf8');
+  const local = fs.readFileSync(new URL('../../compose.local-files.yaml', import.meta.url), 'utf8');
+  assert.match(base, /user: "\$\{RECEIPTS_UID:-1000\}:\$\{RECEIPTS_GID:-1000\}"/);
+  assert.match(base, /HOME=\/tmp/);
+  assert.doesNotMatch(local, /^\s+user:/m);
+  const fn = bashFns(fs.readFileSync(RECEIPTS, 'utf8'), ['env_get', 'worker_uid']);
+  for (const storage of ['local', 'nextcloud']) {
+    const r = compose(fn, 'worker_uid', `STORAGE=${storage}\nRECEIPTS_UID=23456\n`);
+    assert.equal(r.out, '23456');
+  }
+});
+
+test('./receipts: one-off container wrapper requires hosting preflight before Docker', () => {
+  const fn = bashFns(fs.readFileSync(RECEIPTS, 'utf8'), ['worker_one_off']);
+  const r = compose(fn, 'prepare_hosting() { echo missing-folder >&2; exit 1; }; docker() { echo should-not-run; }; worker_one_off --rm worker', 'STORAGE=local\n');
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(r.out, /should-not-run/);
+  assert.match(r.err, /missing-folder/);
+});
+
+test('.env.example leaves receipt folder defaults storage-specific', () => {
+  const example = fs.readFileSync(new URL('../../.env.example', import.meta.url), 'utf8');
+  assert.doesNotMatch(example, /^RECEIPTS_(INBOX|PROCESSED|REVIEW|ARCHIVE)=/m);
 });

@@ -12,7 +12,7 @@ import { filePageSummary } from './filing.js';
 import crypto from 'node:crypto';
 import { selectionSnapshot } from './receipt-selection.js';
 import path from 'node:path/posix';
-import { config, log } from './config.js';
+import { config, filesPlace, log } from './config.js';
 import { money, partNote, shortName, SPLIT_NOTE_MAX, UNCATEGORIZED, cents } from './reconcile.js';
 import { inFolder } from './folders.js';
 import { patchEntry } from './state.js';
@@ -241,7 +241,7 @@ async function createNew({ actual, out, id, entry, summary, edits, plan, found, 
     } catch (err) {
       if (err.movedTo && err.movedTo !== entry.filedAs) await patchEntry(id, (e) => ({ ...e, filedAs: err.movedTo }));
       await patchEntry(id, (e) => ({ ...e, fixedOnPage: { ...e.fixedOnPage, summaryFailed: true } }));
-      fileNote = ` The transaction was created, but the file or its summary could not be ${err.movedTo ? 'rewritten' : 'moved'} in Nextcloud (${err.message}).`;
+      fileNote = ` The transaction was created, but the file or its summary could not be ${err.movedTo ? 'rewritten' : 'moved'} in ${filesPlace()} (${err.message}).`;
       log(`receipt page: ${file}: ${err.message}`);
     }
     await memory.recordSeen({ [newId]: { at, changed: null, items: [], whole: null, review, reviewed: false } }).catch((err) => log(`receipt page: could not record what Actual has: ${err.message}`));

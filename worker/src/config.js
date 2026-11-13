@@ -152,6 +152,23 @@ function localReaderName(setting) {
   return name || 'Qwen3.5-4B';
 }
 
+// STORAGE: nextcloud (WebDAV, the default) | local (a folder on this machine, RECEIPTS_DIR, mounted into the worker at
+// RECEIPTS_MOUNT by compose.local-files.yaml). Only .env sets it: the folder has to be mounted, which a restart does.
+const STORAGE_KINDS = ['nextcloud', 'local'];
+function storageKind() {
+  const kind = (env.STORAGE ?? 'nextcloud').trim().toLowerCase();
+  if (STORAGE_KINDS.includes(kind)) return kind;
+  warn(`STORAGE="${env.STORAGE}" is not one of ${STORAGE_KINDS.join('|')}; using nextcloud`);
+  return 'nextcloud';
+}
+/** The receipt folders when the settings don't name them. A local folder holds them at its top (RECEIPTS_DIR/Inbox); Nextcloud under /Receipts. */
+export const defaultFolders = (local) => {
+  const base = local ? '' : '/Receipts';
+  return { inbox: `${base}/Inbox`, processed: `${base}/Processed`, review: `${base}/Needs review`, archive: `${base}/Archive` };
+};
+/** Is the receipt storage a local folder, by the settings in `source` (process.env by default)? */
+export const localStorageIn = (source = process.env) => String(source.STORAGE ?? '').trim().toLowerCase() === 'local';
+
 /**
  * Build the whole config from a settings object (process.env, plus the status page's overrides). Throws when a required
  * setting is missing or a number is not a number; other bad values warn and use the default. `quiet`: warn about nothing.
@@ -188,7 +205,10 @@ function makeConfig() {
 
   const envDryRun = bool('DRY_RUN', true);
 
-  const archiveProblem = archiveFolderProblem({ inbox: env.RECEIPTS_INBOX ?? '/Receipts/Inbox', processed: env.RECEIPTS_PROCESSED ?? '/Receipts/Processed', review: env.RECEIPTS_REVIEW ?? '/Receipts/Needs review', archive: env.RECEIPTS_ARCHIVE ?? '/Receipts/Archive' });
+  const local = storageKind() === 'local';
+  const dflt = defaultFolders(local);
+  const folders = { inbox: env.RECEIPTS_INBOX ?? dflt.inbox, processed: env.RECEIPTS_PROCESSED ?? dflt.processed, review: env.RECEIPTS_REVIEW ?? dflt.review, archive: env.RECEIPTS_ARCHIVE ?? dflt.archive };
+  const archiveProblem = archiveFolderProblem(folders);
   if (archiveProblem) warn(`${archiveProblem}; archiving is off until it is fixed (the worker carries on with receipts)`);
 
   return {
@@ -288,7 +308,8 @@ function makeConfig() {
     // Birthdays and US holidays near the purchase date, shown to the categorizer as a gift hint (see calendar.js).
     occasions: {
       enabled: bool('OCCASIONS', true),
-      useCalendar: bool('OCCASIONS_CALENDAR', false), // off by default: read all-day events from your Nextcloud calendars
+      // Off by default: read all-day events from your Nextcloud calendars. Needs Nextcloud storage (calendar.js says so otherwise).
+      useCalendar: bool('OCCASIONS_CALENDAR', false),
       calendars: list('OCCASIONS_CALENDARS'), // by name; empty = all
       daysBefore: num('OCCASION_DAYS_BEFORE', 14), // a purchase up to this many days before an occasion
       daysAfter: num('OCCASION_DAYS_AFTER', 2), // or this many days after it
@@ -328,7 +349,7 @@ function makeConfig() {
       payeeMinScore: num('PAYEE_MIN_SCORE', 0.6),
     },
 
-    // --- Actual Budget and Nextcloud ---
+    // --- Actual Budget, and where the receipt files are (Nextcloud or a local folder) ---
     actual: {
       serverURL: siteUrl(requiredTrimmed('ACTUAL_SERVER_URL')),
       // Where "Open in Actual" links point (ACTUAL_LINK_URL); empty or unusable falls back to the server address (actual-link.js cleans it again).
@@ -342,20 +363,24 @@ function makeConfig() {
       apiVersion: (env.ACTUAL_API_VERSION || 'auto').trim(),
       apiDir: env.ACTUAL_API_DIR || '/data/actual-api',
     },
+    // kind 'local': the folders below are inside `root` (the container's mount of RECEIPTS_DIR, local-files.js), and the Nextcloud
+    // address, user and app password are neither needed nor read. `hostDir` is only shown (the Settings tab, the check).
+    storage: { kind: local ? 'local' : 'nextcloud', root: env.RECEIPTS_MOUNT || '/receipts', hostDir: (env.RECEIPTS_DIR || './receipt-files').trim() },
+    // The folder paths are used the same way with both kinds of storage (the name stays nextcloud for the many modules using it).
     nextcloud: {
-      url: siteUrl(requiredTrimmed('NEXTCLOUD_URL')),
-      user: required('NEXTCLOUD_USER'),
-      password: required('NEXTCLOUD_APP_PASSWORD'),
-      inbox: env.RECEIPTS_INBOX ?? '/Receipts/Inbox',
-      processed: env.RECEIPTS_PROCESSED ?? '/Receipts/Processed',
-      review: env.RECEIPTS_REVIEW ?? '/Receipts/Needs review',
-      archive: env.RECEIPTS_ARCHIVE ?? '/Receipts/Archive',
+      url: local ? '' : siteUrl(requiredTrimmed('NEXTCLOUD_URL')),
+      user: local ? '' : required('NEXTCLOUD_USER'),
+      password: local ? '' : required('NEXTCLOUD_APP_PASSWORD'),
+      ...folders,
     },
     // Archiving receipts you agree are right (archive.js): after how many days a done receipt is archived by itself (0 = never),
     // and whether the photo is shrunk when it moves to the Archive folder.
     archive: { afterDays: Math.max(0, Math.round(num('ARCHIVE_AFTER_DAYS', 0))), shrink: bool('ARCHIVE_SHRINK_PHOTOS', true), problem: archiveProblem },
   };
 }
+
+/** Where the receipt files are kept, for messages: "Nextcloud", or "the receipt folder" with STORAGE=local. `start`: for the start of a sentence. */
+export const filesPlace = (start = false) => (config.storage?.kind !== 'local' ? 'Nextcloud' : start ? 'The receipt folder' : 'the receipt folder');
 
 export const log = (...args) => console.log(new Date().toISOString(), ...args);
 

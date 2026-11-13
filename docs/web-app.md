@@ -49,7 +49,7 @@ The Activity page (linked at the bottom of the Inbox list) has the mode switch, 
 
 ## Uploading receipts
 
-**+ Add receipt** sends photos or PDFs from your device (a phone offers the camera) to the Nextcloud Inbox, the same as putting them there yourself. A check starts right away, also in dry run.
+**+ Add receipt** sends photos or PDFs from your device (a phone offers the camera) to the Inbox (in Nextcloud, or in the local receipt folder), the same as putting them there yourself. Without Nextcloud, this is how a phone adds receipts. A check starts right away, also in dry run.
 
 - JPG, PNG, WebP, HEIC and PDF, up to 25 MB each. A file that doesn't fit is turned away with a reason; the others still go in.
 - Nothing is replaced: a taken name gets a time stamp, and the very same photo is skipped as "already in the Inbox".
@@ -85,8 +85,8 @@ The **Settings** tab links to one page per section: Everyday, Matching and revie
 
 - These are the `.env` settings, each with its help line and current value; tuning ones sit under **Advanced**.
 - A saved value goes into `data/web-settings.json` and wins over `.env`. **Use the .env value** or **Reset all to .env** removes it. Each page has **Undo**.
-- A bad value saves nothing, and a changed Actual or Nextcloud login is tested first. Passwords are never shown.
-- Models, providers, API keys, `TRIGGER_TOKEN`, `DRY_RUN` and paths stay in `.env`.
+- A bad value saves nothing, and a changed Actual or Nextcloud login (or, with a local folder, a changed Inbox folder) is tested first. **Connections** shows where the receipts are kept; the Nextcloud fields only appear when that is Nextcloud. Passwords are never shown.
+- Models, providers, API keys, `TRIGGER_TOKEN`, `DRY_RUN`, `STORAGE`, `RECEIPTS_DIR` and paths stay in `.env`.
 
 **Appearance** sets a **Theme** (System, Light or Dark) and an **Accent** color for this browser only.
 
